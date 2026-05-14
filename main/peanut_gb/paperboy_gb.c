@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "peanut_gb.h"
 
@@ -13,7 +15,10 @@ static const uint8_t *s_rom;
 static size_t s_rom_size;
 static uint8_t *s_cart_ram;
 static size_t s_cart_ram_size;
-static uint8_t s_framebuffer[PAPERBOY_GB_LCD_WIDTH * PAPERBOY_GB_LCD_HEIGHT];
+static uint8_t s_work_framebuffer[PAPERBOY_GB_LCD_WIDTH * PAPERBOY_GB_LCD_HEIGHT];
+static uint8_t s_present_framebuffer[PAPERBOY_GB_LCD_WIDTH * PAPERBOY_GB_LCD_HEIGHT];
+static uint32_t s_present_frame_id;
+static SemaphoreHandle_t s_framebuffer_mutex;
 static bool s_ready;
 static char s_last_error[128];
 
@@ -77,7 +82,7 @@ static void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, const uint_
     row = (size_t)line * PAPERBOY_GB_LCD_WIDTH;
 
     for (x = 0; x < PAPERBOY_GB_LCD_WIDTH; x++) {
-        s_framebuffer[row + x] = (uint8_t)(pixels[x] & 0x03);
+        s_work_framebuffer[row + x] = (uint8_t)(pixels[x] & 0x03);
     }
 }
 
@@ -96,7 +101,9 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     }
 
     memset(&s_gb, 0, sizeof(s_gb));
-    memset(s_framebuffer, 0x03, sizeof(s_framebuffer));
+    memset(s_work_framebuffer, 0x03, sizeof(s_work_framebuffer));
+    memset(s_present_framebuffer, 0x03, sizeof(s_present_framebuffer));
+    s_present_frame_id = 0;
 
     s_rom = rom;
     s_rom_size = rom_size;
@@ -130,6 +137,14 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     gb_init_lcd(&s_gb, lcd_draw_line_cb);
     s_gb.direct.joypad = 0xFF;
 
+    if (s_framebuffer_mutex == NULL) {
+        s_framebuffer_mutex = xSemaphoreCreateMutex();
+        if (s_framebuffer_mutex == NULL) {
+            set_last_error("fb mutex alloc failed");
+            return false;
+        }
+    }
+
     ESP_LOGI(TAG, "Peanut-GB initialized. ROM title: %s", gb_get_rom_name(&s_gb, rom_name));
 
     s_ready = true;
@@ -153,6 +168,13 @@ bool paperboy_gb_run_frame(void)
     }
 
     gb_run_frame(&s_gb);
+
+    if (s_framebuffer_mutex != NULL && xSemaphoreTake(s_framebuffer_mutex, portMAX_DELAY) == pdTRUE) {
+        memcpy(s_present_framebuffer, s_work_framebuffer, sizeof(s_present_framebuffer));
+        s_present_frame_id++;
+        xSemaphoreGive(s_framebuffer_mutex);
+    }
+
     return true;
 }
 
@@ -162,7 +184,25 @@ const uint8_t *paperboy_gb_get_framebuffer(void)
         return NULL;
     }
 
-    return s_framebuffer;
+    return s_present_framebuffer;
+}
+
+bool paperboy_gb_copy_framebuffer(uint8_t *out, size_t out_size, uint32_t *out_frame_id)
+{
+    if (!s_ready || out == NULL || out_size < sizeof(s_present_framebuffer)) {
+        return false;
+    }
+
+    if (s_framebuffer_mutex != NULL && xSemaphoreTake(s_framebuffer_mutex, portMAX_DELAY) == pdTRUE) {
+        memcpy(out, s_present_framebuffer, sizeof(s_present_framebuffer));
+        if (out_frame_id != NULL) {
+            *out_frame_id = s_present_frame_id;
+        }
+        xSemaphoreGive(s_framebuffer_mutex);
+        return true;
+    }
+
+    return false;
 }
 
 bool paperboy_gb_is_ready(void)

@@ -47,3 +47,13 @@ menu "Example Configuration"
             Define the blinking period in milliseconds.
 
 endmenu
+
+menu "Paperboy Storage"
+
+    config PAPERBOY_SD_ENABLE
+        bool "Enable SD card over SPI + FATFS"
+        default y
+        help
+            Mounts the SD card using SDSPI and esp_vfs_fat so files can be read from userspace.
+
+endmenu

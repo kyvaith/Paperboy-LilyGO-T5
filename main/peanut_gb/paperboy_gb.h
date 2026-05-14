@@ -21,6 +21,7 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size);
 void paperboy_gb_set_buttons(uint8_t pressed_mask);
 bool paperboy_gb_run_frame(void);
 const uint8_t *paperboy_gb_get_framebuffer(void);
+bool paperboy_gb_copy_framebuffer(uint8_t *out, size_t out_size, uint32_t *out_frame_id);
 bool paperboy_gb_is_ready(void);
 const char *paperboy_gb_last_error(void);
 
