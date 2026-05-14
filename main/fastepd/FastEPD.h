@@ -17,9 +17,6 @@
 #ifndef __FASTEPD_H__
 #define __FASTEPD_H__
 
-#ifdef ARDUINO
-#include <Arduino.h>
-#else
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -33,7 +30,6 @@
 #define HEX 16
 #define OCT 8
 #define BIN 2
-#endif
 
 #define BB_PANEL_FLAG_NONE     0x00
 #define BB_PANEL_FLAG_MIRROR_X 0x01
@@ -305,11 +301,7 @@ typedef struct {
 } IT8951DevInfo;
 
 #ifdef __cplusplus
-#ifdef ARDUINO
-class FASTEPD : public Print
-#else
 class FASTEPD
-#endif
 {
   public:
     FASTEPD() {memset(&_state, 0, sizeof(_state)); _state.iFont = FONT_8x8; _state.iFG = BBEP_BLACK;}
@@ -330,9 +322,6 @@ class FASTEPD
     int setCustomMatrix(const uint8_t *pMatrix, size_t matrix_size);
     int setPanelSize(int width, int height, int flags = BB_PANEL_FLAG_NONE, int iVCOM = -1600);
     int getStringBox(const char *text, BB_RECT *pRect);
-#ifdef ARDUINO
-    void getStringBox(const String &str, BB_RECT *pRect);
-#endif
     int setMode(int iMode); // set graphics mode
     int getPreviousMode(void) { return _state.prev_mode;}
     void setPreviousMode(uint8_t prev_mode) { _state.prev_mode = prev_mode;}
@@ -381,10 +370,6 @@ class FASTEPD
     void fillEllipse(int16_t x, int16_t y, int32_t rx, int32_t ry, uint16_t color);
     void drawString(const char *pText, int x, int y);
     void drawSprite(const uint8_t *pSprite, int cx, int cy, int iPitch, int x, int y, uint8_t iColor);
-#ifdef ARDUINO
-    using Print::write;
-    virtual size_t write(uint8_t);
-#else
     size_t write(uint8_t);
     void print(const char *pString);
     void println(const char *pString);
@@ -392,7 +377,6 @@ class FASTEPD
     void println(int, int);
     void print(const std::string &);
     void println(const std::string &);
-#endif
 
   protected:
     FASTEPDSTATE _state;

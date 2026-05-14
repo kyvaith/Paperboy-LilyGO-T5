@@ -16,9 +16,6 @@
 //
 #include "FastEPD.h"
 #ifndef __LINUX__
-#ifdef ARDUINO
-#include <SPI.h>
-#endif // ARDUINO
 #ifdef CONFIG_IDF_TARGET_ESP32C5
 #include "driver/parlio_tx.h"
 #else
@@ -301,9 +298,9 @@ uint8_t ucTemp[4];
 //
 int bbepIOInit(FASTEPDSTATE *pState)
 {
-    #if !defined( ARDUINO ) && !defined( __LINUX__ )
+#ifndef __LINUX__
         esp_log_level_set("gpio", ESP_LOG_NONE);
-    #endif
+#endif
     int rc = (*(pState->pfnIOInit))(pState);
     if (rc != BBEP_SUCCESS) return rc;
     pState->iPartialPasses = 4; // N.B. The default number of passes for partial updates
@@ -482,21 +479,7 @@ return BBEP_SUCCESS;
 //
 void bbepSetBrightness(FASTEPDSTATE *pState, uint8_t led1, uint8_t led2)
 {
-#ifdef ARDUINO
-#if (ESP_IDF_VERSION_MAJOR > 4)
-    ledcWrite(pState->u8LED1, led1); // PWM (0-255)
-    if (pState->u8LED2 != 0xff) {
-        ledcWrite(pState->u8LED2, led2);
-    }
-#else // old API
-    ledcWrite(0, led1);
-    if (pState->u8LED2 != 0xff) {
-        ledcWrite(1, led2);
-    }   
-#endif
-#else // disabled on esp-idf
     (void)pState; (void)led1; (void)led2;
-#endif
 } /* bbepSetBrightness() */
 
 //
@@ -506,25 +489,6 @@ void bbepInitLights(FASTEPDSTATE *pState, uint8_t led1, uint8_t led2)
 {
     pState->u8LED1 = led1;
     pState->u8LED2 = led2;
-#ifdef ARDUINO // Arduino-only for now
-#if (ESP_IDF_VERSION_MAJOR > 4)
-    ledcAttach(led1, 5000, 8); // attach pin to channel 0
-    ledcWrite(led1, 0); // set to off to start
-    if (led2 != 0xff) {
-        ledcAttach(led2, 5000, 8);
-        ledcWrite(led2, 0); // set to off
-    }
-#else // old API
-    ledcSetup(0, 5000, 8);
-    ledcAttachPin(led1, 0);
-    ledcWrite(0, 0);
-    if (led2 != 0xff) {
-        ledcSetup(1, 5000, 8);
-        ledcAttachPin(led2, 1);
-        ledcWrite(1, 0);
-    }
-#endif
-#endif // ARDUINO
 } /* bbepInitLights() */
 int bbepInitIT8951(FASTEPDSTATE *pState, uint8_t u8MOSI, uint8_t u8MISO, uint8_t u8CLK, uint8_t u8CS, uint8_t u8Busy, uint8_t u8RST, uint8_t u8EN, uint8_t u8ITE_EN)
 {
@@ -945,9 +909,9 @@ int bbepFullUpdate(FASTEPDSTATE *pState, int iClearMode, bool bKeepOn, BB_RECT *
             break;
     }
     bbepClear(pState, BB_CLEAR_NEUTRAL, 1, pRect);
-#if defined( SHOW_TIME ) && defined( ARDUINO )
+#ifdef SHOW_TIME
     l = millis() - l;
-    Serial.printf("clear time = %dms\n", (int)l);
+    printf("clear time = %dms\n", (int)l);
     l = millis();
 #endif // SHOW_TIME
 
@@ -1194,11 +1158,7 @@ int bbepFullUpdate(FASTEPDSTATE *pState, int iClearMode, bool bKeepOn, BB_RECT *
     
 #ifdef SHOW_TIME
     l = millis() - l;
-#ifdef ARDUINO
-    Serial.printf("fullUpdate time: %dms\n", (int)l);
-#else
     printf("fullUpdate time: %dms\n", (int)l);
-#endif 
 #endif // SHOW_TIME
     // Mark this as able to do a partialUpdate() to the same bit mode
     pState->prev_mode = pState->mode;
@@ -1317,21 +1277,9 @@ void bbepConvertPrevBuffer(FASTEPDSTATE *pState)
     pState->prev_mode = pState->mode;
 } /* bbepConvertPrevBuffer() */
 
-#ifdef ARDUINO_ESP32S3_DEV
-#ifdef __cplusplus
-extern "C" {
-#endif // cpp
-void s3_prep_diff(uint8_t *pCurr, uint8_t *pPrev, uint8_t *pDest, int iWidth);
-#ifdef __cplusplus
-}
-#endif // cpp
-#endif // ARDUINO_ESP32S3_DEV
 // Future use
 void bbepPrepareDiff(uint8_t *c, uint8_t *p, uint8_t *d, int iWidth)
 {
-#ifdef ARDUINO_ESP32S3_DEV
-    s3_prep_diff(c, p, d, iWidth);
-#else
     for (int n = 0; n < iWidth / 16; n++) {
         uint8_t cur, prev, diffw, diffb;
         cur = *c++; prev = *p;
@@ -1347,7 +1295,6 @@ void bbepPrepareDiff(uint8_t *c, uint8_t *p, uint8_t *d, int iWidth)
         *(uint16_t *)&d[2] = LUTW_16[diffw] & LUTB_16[diffb];
         d += 4;
     }
-#endif
 } /* bbepPrepareDiff() */
 
 //
@@ -1643,11 +1590,7 @@ int bbepPartialUpdate(FASTEPDSTATE *pState, bool bKeepOn, int iStartLine, int iE
 
 #ifdef SHOW_TIME
     l = millis() - l;
-#ifdef ARDUINO
-    Serial.printf("partialUpdate time: %dms\n", (int)l);
-#else
     printf("partialUpdate time: %dms\n", (int)l);
-#endif
 #endif // SHOW_TIME
     return BBEP_SUCCESS;
 } /* bbepPartialUpdate() */

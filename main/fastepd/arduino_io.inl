@@ -1,5 +1,5 @@
 //
-// bb_epdiy I/O wrapper functions for Arduino
+// bb_epdiy I/O wrapper functions for ESP-IDF
 // Copyright (c) 2024 BitBank Software, Inc.
 // Written by Larry Bank (bitbank@pobox.com)
 //
@@ -29,7 +29,6 @@ static int iDelay = 0; //1;
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "rom/ets_sys.h"
-#ifndef ARDUINO
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "driver/i2c_master.h"
@@ -71,7 +70,6 @@ void delay(uint32_t ms)
     }
     delayMicroseconds((ms % 10) * 1000);
 }
-#endif // !ARDUINO
 
 void bbepPinMode(int iPin, int iMode)
 {
@@ -270,12 +268,6 @@ int bbepI2CInit(uint8_t sda, uint8_t scl, int bb)
 //    else if (iSpeed >= 100000) iDelay = 10;
 //    else iDelay = 20;
     } else {
-#ifdef ARDUINO
-        Wire.end();
-        Wire.begin(sda, scl);
-        Wire.setClock(400000);
-        Wire.setTimeout(100);
-#else
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     i2c_master_bus_config_t conf;
 
@@ -307,7 +299,6 @@ int bbepI2CInit(uint8_t sda, uint8_t scl, int bb)
     ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &conf));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
 #endif // older IDF
-#endif // ARDUINO
     } // !BitBang
     return BBEP_SUCCESS;
 } /* bbepI2CInit() */
@@ -318,13 +309,6 @@ int bbepI2CWrite(unsigned char iAddr, unsigned char *pData, int iLen)
         I2CWrite(iAddr, pData, iLen);
         return 1;
     } else {
-#ifdef ARDUINO
-    int rc = 0;
-    Wire.beginTransmission(iAddr);
-    Wire.write(pData, (unsigned char)iLen);
-    rc = !Wire.endTransmission();
-    return rc;
-#else
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     i2c_device_config_t dev_config;
 
@@ -354,7 +338,6 @@ int bbepI2CWrite(unsigned char iAddr, unsigned char *pData, int iLen)
     i2c_cmd_link_delete(cmd);
     return (ret == ESP_OK);
 #endif // older esp-idf
-#endif // ARDUINO
     } // !BitBang
 }
 
@@ -364,12 +347,6 @@ int i = 0;
     if (bBitBang) {
     i = I2CRead(iAddr, pData, iLen);
     } else {
-#ifdef ARDUINO
-    Wire.requestFrom(iAddr, (unsigned char)iLen);
-    while (i < iLen && Wire.available()) {
-        pData[i++] = Wire.read();
-    }
-#else
     esp_err_t ret;
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     i2c_device_config_t dev_config;
@@ -405,7 +382,6 @@ int i = 0;
     }
     i2c_cmd_link_delete(cmd);
 #endif // older esp-idf version
-#endif // ARDUINO
     } // !BitBang
     return i;
 }
