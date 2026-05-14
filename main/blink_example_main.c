@@ -15,6 +15,7 @@
 #include "sdmmc_cmd.h"
 #include "fastepd/FastEPD.h"
 #include "peanut_gb/paperboy_gb.h"
+#include "paperboy_bg.h"
 
 static const char *TAG = "papers3_demo";
 static FASTEPDSTATE s_epd;
@@ -41,11 +42,20 @@ static const uint8_t s_stub_rom[0x150] = {
 #define SD_PIN_MISO 40
 #define SD_PIN_CS 47
 
-#define GB_SCALE 2
-#define GB_ORIGIN_X 24
-#define GB_ORIGIN_Y 100
-#define GB_TOP_LINE (GB_ORIGIN_Y - 3)
-#define GB_BOTTOM_LINE (GB_ORIGIN_Y + (PAPERBOY_GB_LCD_HEIGHT * GB_SCALE) + 2)
+/*
+ * GB rendering: 3× scale, Bayer-like dithering, 90° CW rotation.
+ * GB_ORIGIN_X_R90 MUST be a multiple of 8 – the renderer writes whole bytes.
+ * After CW 90° and 3× scale the image occupies:
+ *   EPD x: [GB_ORIGIN_X_R90 .. GB_ORIGIN_X_R90 + GB_EPD_COL_SPAN - 1]  (432 px)
+ *   EPD y: [GB_ORIGIN_Y_R90 .. GB_ORIGIN_Y_R90 + GB_EPD_ROW_SPAN - 1]  (480 px)
+ */
+#define GB_ORIGIN_X_R90    432  /* must be ≡ 0 (mod 8) for byte-aligned writes */
+#define GB_ORIGIN_Y_R90     30
+#define GB_EPD_COL_SPAN    (PAPERBOY_GB_LCD_HEIGHT * 3)  /* 432 EPD columns */
+#define GB_EPD_ROW_SPAN    (PAPERBOY_GB_LCD_WIDTH  * 3)  /* 480 EPD rows    */
+#define GB_EPD_PITCH_BYTES (GB_EPD_COL_SPAN / 8)        /* 54 bytes / row  */
+#define GB_TOP_LINE         GB_ORIGIN_Y_R90
+#define GB_BOTTOM_LINE     (GB_ORIGIN_Y_R90 + GB_EPD_ROW_SPAN - 1)
 #define GB_RENDER_INTERVAL_MS 120
 #define GB_EMU_TARGET_HZ 30
 #define GB_EMU_FRAME_PERIOD_US (1000000 / GB_EMU_TARGET_HZ)
@@ -186,15 +196,16 @@ static void probe_sd_file(const char *path)
 
 static void draw_initial_scene(void)
 {
-    char title[] = "FastEPD PaperS3";
-    char subtitle[] = "Core port running in ESP-IDF";
+    // char title[] = "FastEPD PaperS3";
+    // char subtitle[] = "Core port running in ESP-IDF";
 
-    bbepFillScreen(&s_epd, BBEP_WHITE);
-    bbepRectangle(&s_epd, 10, 10, s_epd.width - 11, s_epd.height - 11, BBEP_BLACK, 0);
-    bbepDrawLine(&s_epd, 10, 10, s_epd.width - 11, s_epd.height - 11, BBEP_BLACK);
-    bbepDrawLine(&s_epd, s_epd.width - 11, 10, 10, s_epd.height - 11, BBEP_BLACK);
-    bbepWriteString(&s_epd, 24, 30, title, FONT_16x16, BBEP_BLACK);
-    bbepWriteString(&s_epd, 24, 58, subtitle, FONT_8x8, BBEP_BLACK);
+    // bbepFillScreen(&s_epd, BBEP_WHITE);
+    // bbepRectangle(&s_epd, 10, 10, s_epd.width - 11, s_epd.height - 11, BBEP_BLACK, 0);
+    // bbepDrawLine(&s_epd, 10, 10, s_epd.width - 11, s_epd.height - 11, BBEP_BLACK);
+    // bbepDrawLine(&s_epd, s_epd.width - 11, 10, 10, s_epd.height - 11, BBEP_BLACK);
+    // bbepWriteString(&s_epd, 24, 30, title, FONT_16x16, BBEP_BLACK);
+    // bbepWriteString(&s_epd, 24, 58, subtitle, FONT_8x8, BBEP_BLACK);
+    memcpy(s_epd.pCurrent, image, sizeof(image));
 }
 
 static void draw_status_box(const char *status)
@@ -207,35 +218,107 @@ static void draw_status_box(const char *status)
     bbepWriteString(&s_epd, 26, y0 + 18, (char *)status, FONT_8x8, BBEP_BLACK);
 }
 
+/*
+ * draw_gb_frame – optimised 3× scaler with Bayer dithering and 90° CW rotation.
+ *
+ * Algorithm overview
+ * ------------------
+ * The GB framebuffer is 160 (wide) × 144 (tall), each pixel a shade 0–3
+ * (0 = lightest / white, 3 = darkest / black).
+ *
+ * Each GB pixel maps to a full 3×3 cell (9 pixels) on the EPD.
+ * Shade is encoded as the number of black pixels using a dispersed-dot
+ * ordered dither pattern (0 / 3 / 6 / 9 black pixels for shades 0–3):
+ *
+ *   shade 0: . . .    shade 1: X . .    shade 2: . X X    shade 3: X X X
+ *            . . .             . X .             X . X             X X X
+ *            . . .             . . X             X X .             X X X
+ *
+ * The shade-1 pattern places one black pixel per row and per column
+ * (Latin-square / dispersed-dot), giving the most uniform spread.
+ * Shade 2 is its exact complement.
+ *
+ * A 90° CW rotation is applied as we write, so the 160-column GB axis
+ * becomes the EPD Y axis, and the 144-row GB axis becomes the EPD X axis.
+ *
+ * Coordinate mapping (rotation=0, pitch = native_width/8 = 120):
+ *   epd_y = GB_ORIGIN_Y_R90 + gx*3 + dx   (dx ∈ {0,1,2})
+ *   epd_x = GB_ORIGIN_X_R90 + 431 - gy*3 - dy  (dy ∈ {0,1,2})
+ *
+ * Because GB_ORIGIN_X_R90 ≡ 0 (mod 8) and GB_EPD_COL_SPAN = 432 = 54×8,
+ * the image region is perfectly byte-aligned.  For each GB column gx we
+ * build three 54-byte local buffers in stack/cache, then memcpy to SPIRAM
+ * once – minimising high-latency SPIRAM accesses.
+ *
+ * Dither mask encoding (9 bits, MSB = (dx=0,dy=0)):
+ *   bit8=(dx=0,dy=0)  bit7=(dx=0,dy=1)  bit6=(dx=0,dy=2)
+ *   bit5=(dx=1,dy=0)  bit4=(dx=1,dy=1)  bit3=(dx=1,dy=2)
+ *   bit2=(dx=2,dy=0)  bit1=(dx=2,dy=1)  bit0=(dx=2,dy=2)
+ *
+ *   shade 0 → 0x000  (0 black pixels)
+ *   shade 1 → 0x124  (bits 8,5,2 ← main diagonal: 0b100100100)
+ *   shade 2 → 0x0DB  (bits 7,6,4,3,1,0 ← complement:  0b011011011)
+ *   shade 3 → 0x1FF  (9 black pixels)
+ */
+_Static_assert((GB_ORIGIN_X_R90 & 7) == 0,
+               "GB_ORIGIN_X_R90 must be a multiple of 8");
+_Static_assert((GB_EPD_COL_SPAN & 7) == 0,
+               "GB_EPD_COL_SPAN must be a multiple of 8");
+
 static void draw_gb_frame(const uint8_t *fb)
 {
-    int x;
-    int y;
+    static const uint16_t s_dither[4] = { 0x000, 0x124, 0x0DB, 0x1FF };
 
-    if (fb == NULL || s_epd.pfnSetPixelFast == NULL) {
+    uint8_t      *pCurrent = s_epd.pCurrent;
+    const int     pitch    = (s_epd.native_width + 7) >> 3;  /* bytes per EPD row */
+    const int     byte_ofs = GB_ORIGIN_X_R90 >> 3;           /* byte column of image start */
+    int           gx, gy;
+
+    if (fb == NULL) {
         return;
     }
 
-    bbepRectangle(&s_epd,
-                  GB_ORIGIN_X - 3,
-                  GB_ORIGIN_Y - 3,
-                  GB_ORIGIN_X + (PAPERBOY_GB_LCD_WIDTH * GB_SCALE) + 2,
-                  GB_ORIGIN_Y + (PAPERBOY_GB_LCD_HEIGHT * GB_SCALE) + 2,
-                  BBEP_BLACK,
-                  0);
+    for (gx = 0; gx < PAPERBOY_GB_LCD_WIDTH; gx++) {
+        /* Local row buffers built in fast memory, written to SPIRAM once each. */
+        uint8_t buf0[GB_EPD_PITCH_BYTES];
+        uint8_t buf1[GB_EPD_PITCH_BYTES];
+        uint8_t buf2[GB_EPD_PITCH_BYTES];
 
-    for (y = 0; y < PAPERBOY_GB_LCD_HEIGHT; y++) {
-        for (x = 0; x < PAPERBOY_GB_LCD_WIDTH; x++) {
-            uint8_t shade = fb[(y * PAPERBOY_GB_LCD_WIDTH) + x];
-            uint8_t color = (shade >= 2) ? BBEP_WHITE : BBEP_BLACK;
-            int px = GB_ORIGIN_X + (x * GB_SCALE);
-            int py = GB_ORIGIN_Y + (y * GB_SCALE);
+        uint8_t *row0 = pCurrent + (GB_ORIGIN_Y_R90 + gx * 3    ) * pitch + byte_ofs;
+        uint8_t *row1 = pCurrent + (GB_ORIGIN_Y_R90 + gx * 3 + 1) * pitch + byte_ofs;
+        uint8_t *row2 = pCurrent + (GB_ORIGIN_Y_R90 + gx * 3 + 2) * pitch + byte_ofs;
 
-            s_epd.pfnSetPixelFast(&s_epd, px, py, color);
-            s_epd.pfnSetPixelFast(&s_epd, px + 1, py, color);
-            s_epd.pfnSetPixelFast(&s_epd, px, py + 1, color);
-            s_epd.pfnSetPixelFast(&s_epd, px + 1, py + 1, color);
+        memset(buf0, 0xFF, GB_EPD_PITCH_BYTES);  /* start all-white */
+        memset(buf1, 0xFF, GB_EPD_PITCH_BYTES);
+        memset(buf2, 0xFF, GB_EPD_PITCH_BYTES);
+
+        for (gy = 0; gy < PAPERBOY_GB_LCD_HEIGHT; gy++) {
+            uint16_t d = s_dither[fb[(unsigned)(gy * PAPERBOY_GB_LCD_WIDTH + gx)]];
+            if (d == 0) {
+                continue;  /* shade 0 – all white, nothing to clear */
+            }
+            /* k0/k1/k2: bit offsets within buf (bit 0 = leftmost pixel of buf[0]) */
+            unsigned k0 = (unsigned)(PAPERBOY_GB_LCD_HEIGHT * 3 - 1) - (unsigned)(gy * 3);
+            unsigned k1 = k0 - 1u;
+            unsigned k2 = k0 - 2u;
+            uint8_t  m0 = 0x80u >> (k0 & 7u);
+            uint8_t  m1 = 0x80u >> (k1 & 7u);
+            uint8_t  m2 = 0x80u >> (k2 & 7u);
+
+            if (d & 0x100u) buf0[k0 >> 3u] &= ~m0;  /* (dx=0, dy=0) */
+            if (d & 0x080u) buf0[k1 >> 3u] &= ~m1;  /* (dx=0, dy=1) */
+            if (d & 0x040u) buf0[k2 >> 3u] &= ~m2;  /* (dx=0, dy=2) */
+            if (d & 0x020u) buf1[k0 >> 3u] &= ~m0;  /* (dx=1, dy=0) */
+            if (d & 0x010u) buf1[k1 >> 3u] &= ~m1;  /* (dx=1, dy=1) */
+            if (d & 0x008u) buf1[k2 >> 3u] &= ~m2;  /* (dx=1, dy=2) */
+            if (d & 0x004u) buf2[k0 >> 3u] &= ~m0;  /* (dx=2, dy=0) */
+            if (d & 0x002u) buf2[k1 >> 3u] &= ~m1;  /* (dx=2, dy=1) */
+            if (d & 0x001u) buf2[k2 >> 3u] &= ~m2;  /* (dx=2, dy=2) */
         }
+
+        memcpy(row0, buf0, GB_EPD_PITCH_BYTES);
+        memcpy(row1, buf1, GB_EPD_PITCH_BYTES);
+        memcpy(row2, buf2, GB_EPD_PITCH_BYTES);
     }
 }
 
@@ -295,7 +378,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Initializing FastEPD for M5PaperS3...");
 
-    rc = bbepInitPanel(&s_epd, BB_PANEL_M5PAPERS3, 20000000);
+    rc = bbepInitPanel(&s_epd, BB_PANEL_M5PAPERS3, 24000000);
     if (rc != BBEP_SUCCESS) {
         ESP_LOGE(TAG, "bbepInitPanel failed: %d", rc);
         return;
@@ -311,11 +394,11 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "Full update done, waiting before partial update...");
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    // vTaskDelay(pdMS_TO_TICKS(1500));
 
     sd_err = sdcard_mount();
     if (sd_err == ESP_OK) {
-        const char *rom_path = SD_MOUNT_POINT "/game/tetris.gb";
+        const char *rom_path = SD_MOUNT_POINT "/game/SuperMarioLand.gb";
         probe_sd_file(rom_path);
         if (load_gb_rom_from_file(rom_path)) {
             rom_data = s_rom_data;
@@ -359,31 +442,6 @@ void app_main(void)
         }
     }
 
-    draw_status_box(gb_ok ? gb_msg : "Peanut-GB init failed");
-    if (gb_ok) {
-        bbepRectangle(&s_epd,
-                      GB_ORIGIN_X - 3,
-                      GB_ORIGIN_Y - 3,
-                      GB_ORIGIN_X + (PAPERBOY_GB_LCD_WIDTH * GB_SCALE) + 2,
-                      GB_ORIGIN_Y + (PAPERBOY_GB_LCD_HEIGHT * GB_SCALE) + 2,
-                      BBEP_BLACK,
-                      0);
-    }
-
-    rc = bbepPartialUpdate(&s_epd, false, STATUS_TOP_LINE, STATUS_BOTTOM_LINE);
-    if (rc != BBEP_SUCCESS) {
-        ESP_LOGE(TAG, "bbepPartialUpdate failed: %d", rc);
-        return;
-    }
-
-    if (gb_ok) {
-        rc = bbepPartialUpdate(&s_epd, false, GB_TOP_LINE, GB_BOTTOM_LINE);
-        if (rc != BBEP_SUCCESS) {
-            ESP_LOGE(TAG, "bbepPartialUpdate for GB preview failed: %d", rc);
-            return;
-        }
-    }
-
     ESP_LOGI(TAG, "Entering GB render loop");
 
     last_new_frame_us = esp_timer_get_time();
@@ -414,7 +472,7 @@ void app_main(void)
             last_new_frame_us = now_us;
             draw_gb_frame(s_render_framebuffer);
 
-            rc = bbepPartialUpdate(&s_epd, false, GB_TOP_LINE, GB_BOTTOM_LINE);
+            rc = bbepPartialUpdate(&s_epd, true, 0, 539);
             if (rc != BBEP_SUCCESS) {
                 ESP_LOGE(TAG, "bbepPartialUpdate render loop failed: %d", rc);
                 vTaskDelay(pdMS_TO_TICKS(250));
@@ -441,16 +499,16 @@ void app_main(void)
                          (unsigned)last_frame_id);
             }
 
-            draw_status_box(status_line);
-            rc = bbepPartialUpdate(&s_epd, false, STATUS_TOP_LINE, STATUS_BOTTOM_LINE);
-            if (rc != BBEP_SUCCESS) {
-                ESP_LOGE(TAG, "status bbepPartialUpdate failed: %d", rc);
-            }
+            // draw_status_box(status_line);
+            // rc = bbepPartialUpdate(&s_epd, false, STATUS_TOP_LINE, STATUS_BOTTOM_LINE);
+            // if (rc != BBEP_SUCCESS) {
+            //     ESP_LOGE(TAG, "status bbepPartialUpdate failed: %d", rc);
+            // }
 
             ESP_LOGI(TAG, "%s", status_line);
             last_status_us = now_us;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(GB_RENDER_INTERVAL_MS));
+        //vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
