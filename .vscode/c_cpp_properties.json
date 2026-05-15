@@ -2,15 +2,19 @@
   "configurations": [
     {
       "name": "ESP-IDF",
-      "compilerPath": "/Users/wenting/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20250730/riscv32-esp-elf/bin/riscv32-esp-elf-gcc",
-      "compileCommands": "${config:idf.buildPath}/compile_commands.json",
-      "intelliSenseMode": "gcc-x86",
+      "compilerPath": "/Users/wenting/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20250730/xtensa-esp-elf/bin/xtensa-esp-elf-gcc",
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+      "intelliSenseMode": "macos-clang-arm64",
       "includePath": [
-        "${workspaceFolder}/**"
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/managed_components/**",
+        "${config:idf.currentSetup}/components/**"
       ],
       "browse": {
         "path": [
-          "${workspaceFolder}"
+          "${workspaceFolder}",
+          "${workspaceFolder}/managed_components",
+          "${config:idf.currentSetup}/components"
         ],
         "limitSymbolsToIncludedHeaders": true
       }

@@ -92,12 +92,12 @@
 /* Enable 16 bit colour palette. If disabled, only four colour shades are set in
  * pixel data. */
 #ifndef PEANUT_GB_12_COLOUR
-# define PEANUT_GB_12_COLOUR 1
+# define PEANUT_GB_12_COLOUR 0
 #endif
 
 /* Adds more code to improve LCD rendering accuracy. */
 #ifndef PEANUT_GB_HIGH_LCD_ACCURACY
-# define PEANUT_GB_HIGH_LCD_ACCURACY 1
+# define PEANUT_GB_HIGH_LCD_ACCURACY 0
 #endif
 
 /* Use intrinsic functions. This may produce smaller and faster code. */
