@@ -16,6 +16,7 @@
 #include "msg/msg.h"
 #include "gbemu.h"
 #include "background.h"
+#include "touch.h"
 
 static const char *TAG = "paperboy";
 static sdmmc_card_t *s_sd_card;
@@ -207,6 +208,8 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing MSG");
     msg_init();
     msg_start();
+
+    tp_init();  /* GT911 touch — non-fatal if absent */
 
     uint8_t *fb = (uint8_t *)heap_caps_calloc(1, EPD_FB_SIZE, MALLOC_CAP_SPIRAM);
     memset(fb, 0xff, EPD_FB_SIZE);
