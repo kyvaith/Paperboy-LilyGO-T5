@@ -6,6 +6,7 @@
 
 #include "gbemu.h"
 #include "audio.h"
+#include "profiler.h"
 
 /* Walnut-CGB feature flags – must be set before including walnut_cgb.h */
 #define WALNUT_FULL_GBC_SUPPORT 0   /* DMG-only, no CGB colour mode */
@@ -48,7 +49,7 @@ void audio_write(uint16_t addr, uint8_t val)
     audio_apu_write(addr, val);
 }
 
-static uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
+static IRAM_ATTR uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
 {
     (void)gb;
 
@@ -59,7 +60,7 @@ static uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
     return 0xFF;
 }
 
-static uint16_t gb_rom_read16_cb(struct gb_s *gb, const uint_fast32_t addr)
+static IRAM_ATTR uint16_t gb_rom_read16_cb(struct gb_s *gb, const uint_fast32_t addr)
 {
     (void)gb;
 
@@ -72,7 +73,7 @@ static uint16_t gb_rom_read16_cb(struct gb_s *gb, const uint_fast32_t addr)
     return *(uint16_t *)src;
 }
 
-static uint32_t gb_rom_read32_cb(struct gb_s *gb, const uint_fast32_t addr)
+static IRAM_ATTR uint32_t gb_rom_read32_cb(struct gb_s *gb, const uint_fast32_t addr)
 {
     const uint8_t *src = &s_rom[addr];
 
@@ -88,7 +89,7 @@ static uint32_t gb_rom_read32_cb(struct gb_s *gb, const uint_fast32_t addr)
     return *(uint32_t *)src;
 }
 
-static uint8_t gb_cart_ram_read_cb(struct gb_s *gb, const uint_fast32_t addr)
+static IRAM_ATTR uint8_t gb_cart_ram_read_cb(struct gb_s *gb, const uint_fast32_t addr)
 {
     (void)gb;
 
@@ -99,7 +100,7 @@ static uint8_t gb_cart_ram_read_cb(struct gb_s *gb, const uint_fast32_t addr)
     return s_cart_ram[addr];
 }
 
-static void gb_cart_ram_write_cb(struct gb_s *gb, const uint_fast32_t addr, const uint8_t val)
+static IRAM_ATTR void gb_cart_ram_write_cb(struct gb_s *gb, const uint_fast32_t addr, const uint8_t val)
 {
     (void)gb;
 
@@ -118,11 +119,14 @@ static void gb_error_cb(struct gb_s *gb, const enum gb_error_e err, const uint16
     set_last_error("runtime core error");
 }
 
-static void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line)
+static IRAM_ATTR void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line)
 {
     (void)gb;
 
+    PROF_BEGIN(PROF_LCD);
+
     if (line >= GB_LCD_HEIGHT) {
+        PROF_END(PROF_LCD);
         return;
     }
 
@@ -170,6 +174,8 @@ static void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, const uint_
             wrptr += stride;
         }
     }
+
+    PROF_END(PROF_LCD);
 }
 
 bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)

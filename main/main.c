@@ -18,6 +18,7 @@
 #include "background.h"
 #include "touch.h"
 #include "ui.h"
+#include "profiler.h"
 
 static const char *TAG = "paperboy";
 static sdmmc_card_t *s_sd_card;
@@ -126,7 +127,16 @@ static bool load_gb_rom_from_file(const char *path)
     }
 
     rewind(f);
-    s_rom_data = (uint8_t *)(uint8_t *)heap_caps_calloc(1, file_len, MALLOC_CAP_SPIRAM);
+    /* Prefer internal DRAM: 1–3 cycle access vs PSRAM cache-miss (~20–40 cy).
+     * Falls back to PSRAM when the ROM is too large for available SRAM. */
+    s_rom_data = (uint8_t *)heap_caps_malloc(file_len,
+                                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (s_rom_data == NULL) {
+        ESP_LOGW(TAG, "ROM (%ld B) does not fit in internal SRAM, using PSRAM", file_len);
+        s_rom_data = (uint8_t *)heap_caps_malloc(file_len, MALLOC_CAP_SPIRAM);
+    } else {
+        ESP_LOGI(TAG, "ROM (%ld B) allocated in internal SRAM", file_len);
+    }
     if (s_rom_data == NULL) {
         fclose(f);
         ESP_LOGE(TAG, "Failed to allocate ROM buffer (%ld bytes)", file_len);
@@ -209,9 +219,7 @@ void app_main(void)
      * (video output suppressed) when the emulator falls behind VSYNC. */
     #define MAX_FRAME_SKIPS 2
 
-    uint32_t last_print = 0;
     int skip_count = 0;
-    int total_skip_count = 0;
 
     /* Obtain the first back-buffer and record the current VSYNC epoch. */
     uint8_t *video_fb = msg_flip();
@@ -224,23 +232,19 @@ void app_main(void)
         }
 
         /* Poll touchscreen and update GB button state every emulated frame. */
+        PROF_BEGIN(PROF_TOUCH);
         paperboy_gb_set_buttons(tp_read_buttons());
+        PROF_END(PROF_TOUCH);
 
         bool skip_render = (skip_count > 0);
 
-        uint32_t start = esp_timer_get_time();
+        PROF_BEGIN(PROF_FRAME);
         if (!paperboy_gb_run_frame(video_fb, skip_render)) {
             ESP_LOGE(TAG, "paperboy_gb_run_frame failed: %s", paperboy_gb_last_error());
             gb_ok = false;
             continue;
         }
-        uint32_t end = esp_timer_get_time();
-
-        if ((end - last_print) > 1000000) {
-            ESP_LOGI(TAG, "Last frame time: %lu us (skip_count=%d)", end - start, total_skip_count);
-            last_print = end;
-            total_skip_count = 0;
-        }
+        PROF_END(PROF_FRAME);
 
         /* Check whether at least one VSYNC fired while we were rendering. */
         bool missed = (msg_get_vsync_count() != vsync_ref);
@@ -250,15 +254,18 @@ void app_main(void)
              * the last submitted frame.  Run another emulation pass without
              * rendering to try to catch back up. */
             skip_count++;
-            total_skip_count++;
             video_fb  = msg_flip_nowait();
             vsync_ref = msg_get_vsync_count();
         } else {
             /* Either on time, or we've hit the skip cap: submit the last
              * rendered frame and wait for the next VSYNC. */
             skip_count = 0;
+            PROF_BEGIN(PROF_FLIP);
             video_fb  = msg_flip();
+            PROF_END(PROF_FLIP);
             vsync_ref = msg_get_vsync_count();
         }
+
+        profiler_frame_end(skip_render);
     }
 }

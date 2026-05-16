@@ -35,8 +35,10 @@
 #include "esp_log.h"
 #include "esp_attr.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 
 #include "minigb_apu/minigb_apu.h"
+#include "profiler.h"
 
 static const char *TAG = "audio";
 
@@ -140,6 +142,8 @@ static void audio_task(void *arg)
     static int16_t dma_buf[DMA_CHUNK];
 
     while (s_running) {
+        int64_t t_audio_start = esp_timer_get_time();
+
         /*
          * Step 1 — APU synthesis.
          *
@@ -180,6 +184,10 @@ static void audio_task(void *arg)
             }
             atomic_store_explicit(&s_ring_tail, tail + n, memory_order_release);
         }
+
+        /* Synthesis + ring-fill is now complete — record CPU-busy time before
+         * blocking on i2s_channel_write() (the emulator runs during that wait). */
+        profiler_audio_add(esp_timer_get_time() - t_audio_start);
 
         if (n < DMA_CHUNK) {
             memset(&dma_buf[n], 0, (DMA_CHUNK - n) * sizeof(int16_t));
