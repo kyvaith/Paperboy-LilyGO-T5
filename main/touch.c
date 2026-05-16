@@ -264,7 +264,7 @@ uint8_t tp_read_buttons(void)
             uint16_t raw_y = (uint16_t)pt[3] | ((uint16_t)(pt[4] & 0x0F) << 8);
 
             /* Log raw coordinates — use these to fill in the stub rects above. */
-            ESP_LOGI(TAG, "touch[%u] raw_x=%-4u raw_y=%-4u", (unsigned)p, raw_x, raw_y);
+            //ESP_LOGI(TAG, "touch[%u] raw_x=%-4u raw_y=%-4u", (unsigned)p, raw_x, raw_y);
 
             for (size_t b = 0; b < NUM_BUTTONS; b++) {
                 for (size_t ri = 0; ri < 2; ri++) {
