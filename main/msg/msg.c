@@ -38,6 +38,8 @@
 // App includes
 #include "msg.h"
 
+//#define TIME_PRINT
+
 // Private
 static const char *TAG = "msg";
 
@@ -52,7 +54,7 @@ static esp_lcd_panel_io_handle_t panel_io_handle = NULL;
 static uint8_t *fb[2];
 static volatile int front_buffer;
 static uint8_t *statebuf;
-static volatile uint8_t *img_src;
+static uint8_t *img_src;
 static volatile bool img_req;
 static volatile bool img_to_white;
 static volatile bool flip_req;
@@ -94,7 +96,7 @@ static void msg_power_off() {
     ets_delay_us(100);
 }
 
-static void msg_send_row(uint8_t *data) {
+static void IRAM_ATTR msg_send_row(uint8_t *data) {
     // Wait if last line hasn't finished
     while (!dma_done); // Spin loop, shouldn't yield
 
@@ -103,17 +105,19 @@ static void msg_send_row(uint8_t *data) {
     gpio_set_level(EPD_SDLE_PIN, 0);
     gpio_set_level(EPD_GDCK_PIN, 1);
 
-    esp_err_t err = esp_lcd_panel_io_tx_color(panel_io_handle, -1, data,
+    esp_lcd_panel_io_tx_color(panel_io_handle, -1, data,
         (EPD_WIDTH / 4) + EPD_LINE_PAD);
 
     dma_done = false;
 }
 
-static void msg_update_task(void *arg) {
+static void IRAM_ATTR msg_update_task(void *arg) {
     int field_counter = 0;
+#ifdef TIME_PRINT
     bool printed = false;
     bool img_printed = false;
     uint32_t last_print = 0;
+#endif
 
     while (true) {
         // JUST KEEP CRANKING
@@ -123,10 +127,12 @@ static void msg_update_task(void *arg) {
         }
         uint8_t *cur_buf = fb[front_buffer];
 
+#ifdef TIME_PRINT
         uint32_t start = esp_timer_get_time();
         if ((start - last_print) > 1000000) {
             printed = false;
         }
+#endif
 
         // Frame start sequence
         gpio_set_level(EPD_GDCK_PIN, 1);
@@ -267,13 +273,15 @@ static void msg_update_task(void *arg) {
         msg_send_row(dma_buf[0]);
         while (!dma_done);
 
+#ifdef TIME_PRINT
         uint32_t end = esp_timer_get_time();
 
-        // if (!printed) {
-        //     ESP_LOGI(TAG, "Frame time: %lu us", end - start);
-        //     last_print = end;
-        //     printed = true;
-        // }
+        if (!printed) {
+            ESP_LOGI(TAG, "Frame time: %lu us", end - start);
+            last_print = end;
+            printed = true;
+        }
+#endif
     }
 }
 
@@ -395,6 +403,7 @@ uint8_t *msg_flip(void) {
     flip_req = true;
     while (flip_req) {
         //vTaskDelay(1);
+        taskYIELD();
     }
     return fb[!front_buffer];
 }

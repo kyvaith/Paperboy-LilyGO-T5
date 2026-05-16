@@ -1,10 +1,17 @@
-#include "paperboy_gb.h"
-
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
-#include "peanut_gb.h"
+#include <esp_attr.h>
+
+#include "gbemu.h"
+
+/* Walnut-CGB feature flags – must be set before including walnut_cgb.h */
+#define WALNUT_FULL_GBC_SUPPORT 0   /* DMG-only, no CGB colour mode */
+#define WALNUT_GB_12_COLOUR     0   /* must match WALNUT_FULL_GBC_SUPPORT */
+#define WALNUT_GB_32BIT_DMA     1   /* ESP32-S3 handles unaligned 32-bit fine */
+#define ENABLE_SOUND            0   /* no audio */
+#include "walnut_cgb.h"
 
 static const char *TAG = "gbemu";
 
@@ -31,6 +38,35 @@ static uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
     }
 
     return 0xFF;
+}
+
+static uint16_t gb_rom_read16_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    (void)gb;
+
+    const uint8_t *src = &s_rom[addr];
+    // Alignment check, not required for all platforms. ESP32 series mcu flash memory and psram sources *require* this
+    if ((uintptr_t)src & 1) {
+        // fallback to safe 8-bit reads when not aligned
+        return ((uint16_t)src[0]) | ((uint16_t)src[1] << 8);          
+    } 
+    return *(uint16_t *)src;
+}
+
+static uint32_t gb_rom_read32_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    const uint8_t *src = &s_rom[addr];
+
+    // Alignment check: ESP32 flash / PSRAM require 32-bit alignment
+    if ((uintptr_t)src & 3) {
+        // fallback to safe 8-bit reads when not aligned
+        return ((uint32_t)src[0]) |
+               ((uint32_t)src[1] << 8) |
+               ((uint32_t)src[2] << 16) |
+               ((uint32_t)src[3] << 24);
+    }
+
+    return *(uint32_t *)src;
 }
 
 static uint8_t gb_cart_ram_read_cb(struct gb_s *gb, const uint_fast32_t addr)
@@ -142,6 +178,8 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
 
     init_err = gb_init(&s_gb,
                        gb_rom_read_cb,
+                       gb_rom_read16_cb,
+                       gb_rom_read32_cb,
                        gb_cart_ram_read_cb,
                        gb_cart_ram_write_cb,
                        gb_error_cb,
@@ -165,7 +203,7 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     gb_init_lcd(&s_gb, lcd_draw_line_cb);
     s_gb.direct.joypad = 0xFF;
 
-    ESP_LOGI(TAG, "Peanut-GB initialized. ROM title: %s", gb_get_rom_name(&s_gb, rom_name));
+    ESP_LOGI(TAG, "Walnut-CGB initialized. ROM title: %s", gb_get_rom_name(&s_gb, rom_name));
 
     s_ready = true;
     set_last_error("ok");
@@ -190,7 +228,7 @@ bool paperboy_gb_run_frame(uint8_t *fb)
     s_framebuffer = fb;
     memset(s_framebuffer, 0, 160*144/8); // debug
 
-    gb_run_frame(&s_gb);
+    gb_run_frame_dualfetch(&s_gb);
 
     return true;
 }

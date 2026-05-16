@@ -14,8 +14,8 @@
 #include "driver/gpio.h"
 #include "sdmmc_cmd.h"
 #include "msg/msg.h"
-#include "peanut_gb/paperboy_gb.h"
-#include "paperboy_bg.h"
+#include "gbemu.h"
+#include "background.h"
 
 static const char *TAG = "paperboy";
 static sdmmc_card_t *s_sd_card;
@@ -47,7 +47,6 @@ static size_t s_rom_size;
 #define GB_BOTTOM_LINE     (GB_ORIGIN_Y_R90 + GB_EPD_ROW_SPAN - 1)
 static esp_err_t sdcard_mount(void)
 {
-#if CONFIG_PAPERBOY_SD_ENABLE
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
@@ -97,9 +96,6 @@ static esp_err_t sdcard_mount(void)
     sdmmc_card_print_info(stdout, s_sd_card);
     ESP_LOGI(TAG, "Mounted SD card on %s", SD_MOUNT_POINT);
     return ESP_OK;
-#else
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
 }
 
 static bool load_gb_rom_from_file(const char *path)
@@ -256,9 +252,6 @@ void app_main(void)
 
     uint32_t last_print = 0;
     while (1) {
-        uint8_t *video_fb;
-        const uint8_t *gb_frame;
-
         if (!gb_ok) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
@@ -266,7 +259,7 @@ void app_main(void)
 
         /* msg_flip blocks for the next 60 Hz video swap, so one GB frame maps
          * directly to one submitted EPD frame. */
-        video_fb = msg_flip();
+        uint8_t *video_fb = msg_flip();
 
         uint32_t start = esp_timer_get_time();
         if (!paperboy_gb_run_frame(video_fb)) {

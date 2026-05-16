@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "main.c" "msg/msg.c" "peanut_gb/paperboy_gb.c"
-    INCLUDE_DIRS "." "msg" "peanut_gb"
+    SRCS "main.c" "msg/msg.c" "gbemu.c"
+    INCLUDE_DIRS "." "msg"
     REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd
 )
 
