@@ -59,6 +59,7 @@ static volatile bool img_req;
 static volatile bool img_to_white;
 static volatile bool flip_req;
 static volatile bool enable_video;
+static TaskHandle_t flip_waiter_task;
 
 // Ping-pong DMA buffer
 static uint8_t *dma_buf[2];
@@ -124,6 +125,10 @@ static void IRAM_ATTR msg_update_task(void *arg) {
         if (flip_req) {
             front_buffer = !front_buffer;
             flip_req = false;
+            if (flip_waiter_task != NULL) {
+                xTaskNotifyGive(flip_waiter_task);
+                flip_waiter_task = NULL;
+            }
         }
         uint8_t *cur_buf = fb[front_buffer];
 
@@ -386,6 +391,7 @@ void msg_display_image(uint8_t *img, bool to_white) {
 void msg_start(void) {
     dma_done = true;
     enable_video = false;
+    flip_waiter_task = NULL;
     msg_power_on();
     BaseType_t result = xTaskCreatePinnedToCore(msg_update_task, "msg", 8192,
             NULL, MSG_TASK_PRIORITY, NULL, 1);
@@ -399,11 +405,13 @@ void msg_enable_video(bool en) {
 }
 
 uint8_t *msg_flip(void) {
-    // TOO LAZY
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+
+    // Drop stale notifications, if any, before waiting for the next VSYNC.
+    (void)ulTaskNotifyTake(pdTRUE, 0);
+    flip_waiter_task = self;
     flip_req = true;
-    while (flip_req) {
-        //vTaskDelay(1);
-        taskYIELD();
-    }
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
     return fb[!front_buffer];
 }
