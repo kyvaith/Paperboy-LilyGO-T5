@@ -221,6 +221,11 @@ static void audio_task(void *arg)
 
 void audio_init(void)
 {
+    if (s_running) {
+        minigb_apu_audio_init(&s_apu);
+        return;
+    }
+
     /* --- I2S channel -------------------------------------------------- */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO,
                                                             I2S_ROLE_MASTER);

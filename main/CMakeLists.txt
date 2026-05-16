@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c"
-    INCLUDE_DIRS "." "msg" "minigb_apu"
+    INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu"
     REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c
 )
 
@@ -12,7 +12,7 @@ if ((IDF_VERSION_MAJOR GREATER_EQUAL 5) AND (${IDF_TARGET} MATCHES "^esp32$|esp3
 endif ()
 
 # Compile the emulator translation unit at -O3.
-# walnut_cgb.h is included here and contains the entire SM83 CPU decoder;
-# the extra optimisation (better register allocation, unrolling) typically
-# saves 5–15% on the hot loop.
-set_source_files_properties(gbemu.c PROPERTIES COMPILE_FLAGS "-O3")
+# The CrankBoy core is embedded through gbemu.c as a single translation unit.
+# Keep it highly optimised, and relax a couple of warnings that come from the
+# template-expanded interpreter labels in the vendored core.
+set_source_files_properties(gbemu.c PROPERTIES COMPILE_FLAGS "-O3 -Wno-error=unused-label")

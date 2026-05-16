@@ -22,6 +22,12 @@ void paperboy_gb_set_buttons(uint8_t pressed_mask);
 // Run one GB frame.  If skip_render is true, lcd_draw_line callbacks are
 // suppressed (saving ~10-15 ms); fb may be NULL in that case.
 bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render);
+bool paperboy_gb_has_persist(void);
+size_t paperboy_gb_persist_size(void);
+bool paperboy_gb_persist_is_dirty(void);
+bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestamp);
+bool paperboy_gb_persist_import(const uint8_t *src, size_t src_size, uint32_t current_timestamp);
+void paperboy_gb_persist_mark_clean(void);
 bool paperboy_gb_is_ready(void);
 const char *paperboy_gb_last_error(void);
 
