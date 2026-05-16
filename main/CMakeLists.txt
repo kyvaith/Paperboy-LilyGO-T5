@@ -12,7 +12,7 @@ if ((IDF_VERSION_MAJOR GREATER_EQUAL 5) AND (${IDF_TARGET} MATCHES "^esp32$|esp3
 endif ()
 
 # Compile the emulator translation unit at -O3.
-# gbemu.c unity-builds PICboy.c (the entire emulator core) in one TU;
+# walnut_cgb.h is included here and contains the entire SM83 CPU decoder;
 # the extra optimisation (better register allocation, unrolling) typically
 # saves 5–15% on the hot loop.
 set_source_files_properties(gbemu.c PROPERTIES COMPILE_FLAGS "-O3")

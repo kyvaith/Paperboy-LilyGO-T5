@@ -1,269 +1,291 @@
-/*
- * gbemu.c — PICboy core integration for Paperboy / M5PaperS3
- *
- * Wraps PICboy (a fast GB/GBC emulator for microcontrollers) behind the same
- * paperboy_gb_* interface that main.c depends on.  The WalnutGB back-end has
- * been replaced; see gbemu_walnut.c.bak for the old implementation.
- *
- * Unity-build: PICboy.c is #included directly so the compiler sees the whole
- * emulator as one translation unit, enabling maximum inlining and register
- * allocation across the hot loop.
- */
-
-#define PICBOY_EMBEDDED  /* suppress desktop (GL/AL/GLFW) code in PICboy.c */
-
+#include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <stdbool.h>
 
 #include "esp_log.h"
-#include "esp_attr.h"
+#include <esp_attr.h>
 
 #include "gbemu.h"
 #include "audio.h"
 #include "profiler.h"
 
-/* ---- PICboy unity build ---- */
-#include "PICboy.c"
+/* Walnut-CGB feature flags – must be set before including walnut_cgb.h */
+#define WALNUT_FULL_GBC_SUPPORT 0   /* DMG-only, no CGB colour mode */
+#define WALNUT_GB_12_COLOUR     0   /* must match WALNUT_FULL_GBC_SUPPORT */
+#define WALNUT_GB_32BIT_DMA     1   /* ESP32-S3 handles unaligned 32-bit fine */
+#define ENABLE_SOUND            1   /* Enable minigb_apu audio */
+#define ENABLE_LCD              1
 
-/* ------------------------------------------------------------------ */
+/* Forward declarations for audio callbacks used by walnut_cgb.h */
+uint8_t audio_read(uint16_t addr);
+void audio_write(uint16_t addr, uint8_t val);
+
+#include "walnut_cgb.h"
 
 static const char *TAG = "gbemu";
-static bool        s_ready        = false;
-static char        s_last_error[128];
 
-/*
- * Grayscale DMG palette in RGB555 format (PICboy native).
- *   Index 0 = white (lightest), index 3 = black (darkest)
- * These values map exactly to EPD shades 0-3 via the luminance formula:
- *   shade = 3 - (((r+g+b)/3) >> 3)
- */
-static const uint16_t s_dmg_gray[4] = {
-    0x7FFF,  /* R=G=B=31  lum=31  shade=0 (white)       */
-    0x56B5,  /* R=G=B=21  lum=21  shade=1 (light grey)  */
-    0x294A,  /* R=G=B=10  lum=10  shade=2 (dark grey)   */
-    0x0000,  /* R=G=B=0   lum=0   shade=3 (black)       */
-};
+static struct gb_s s_gb;
+static const uint8_t *s_rom;
+static size_t s_rom_size;
+static uint8_t *s_cart_ram;
+static size_t s_cart_ram_size;
+static uint8_t *s_framebuffer;
+static bool s_ready;
+static char s_last_error[128];
 
-/* ------------------------------------------------------------------ */
+static void set_last_error(const char *msg)
+{
+    strlcpy(s_last_error, msg, sizeof(s_last_error));
+}
+
+/* Audio I/O callbacks – called by Walnut-CGB when accessing APU registers.
+ * The APU state lives in audio.c; route through its public API. */
+uint8_t audio_read(uint16_t addr)
+{
+    return audio_apu_read(addr);
+}
+
+void audio_write(uint16_t addr, uint8_t val)
+{
+    audio_apu_write(addr, val);
+}
+
+static IRAM_ATTR uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    (void)gb;
+
+    if (addr < s_rom_size) {
+        return s_rom[addr];
+    }
+
+    return 0xFF;
+}
+
+static IRAM_ATTR uint16_t gb_rom_read16_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    (void)gb;
+
+    const uint8_t *src = &s_rom[addr];
+    // Alignment check, not required for all platforms. ESP32 series mcu flash memory and psram sources *require* this
+    if ((uintptr_t)src & 1) {
+        // fallback to safe 8-bit reads when not aligned
+        return ((uint16_t)src[0]) | ((uint16_t)src[1] << 8);          
+    } 
+    return *(uint16_t *)src;
+}
+
+static IRAM_ATTR uint32_t gb_rom_read32_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    const uint8_t *src = &s_rom[addr];
+
+    // Alignment check: ESP32 flash / PSRAM require 32-bit alignment
+    if ((uintptr_t)src & 3) {
+        // fallback to safe 8-bit reads when not aligned
+        return ((uint32_t)src[0]) |
+               ((uint32_t)src[1] << 8) |
+               ((uint32_t)src[2] << 16) |
+               ((uint32_t)src[3] << 24);
+    }
+
+    return *(uint32_t *)src;
+}
+
+static IRAM_ATTR uint8_t gb_cart_ram_read_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    (void)gb;
+
+    if (s_cart_ram == NULL || s_cart_ram_size == 0 || addr >= s_cart_ram_size) {
+        return 0xFF;
+    }
+
+    return s_cart_ram[addr];
+}
+
+static IRAM_ATTR void gb_cart_ram_write_cb(struct gb_s *gb, const uint_fast32_t addr, const uint8_t val)
+{
+    (void)gb;
+
+    if (s_cart_ram == NULL || s_cart_ram_size == 0 || addr >= s_cart_ram_size) {
+        return;
+    }
+
+    s_cart_ram[addr] = val;
+}
+
+static void gb_error_cb(struct gb_s *gb, const enum gb_error_e err, const uint16_t addr)
+{
+    (void)gb;
+
+    ESP_LOGE(TAG, "Emulator error=%d at addr=0x%04x", (int)err, addr);
+    set_last_error("runtime core error");
+}
+
+static IRAM_ATTR void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line)
+{
+    (void)gb;
+
+    PROF_BEGIN(PROF_LCD);
+
+    if (line >= GB_LCD_HEIGHT) {
+        PROF_END(PROF_LCD);
+        return;
+    }
+
+    int target_x = (143 - line) * 3;
+    uint8_t *wrptr = &(s_framebuffer[target_x / 8]);
+    // We need to write 3 pixels, which might cross the byte boundary (each byte holds 8 pixels)
+    // This depends on the line being drawn
+    int offset_x = target_x % 8;
+    bool crossing = offset_x >= 6;
+    uint32_t stride = crossing ? 53 : 54;
+    uint8_t clrmask;
+    uint8_t setmask[4];
+    uint8_t clrmask_crossing;
+    uint8_t setmask_crossing[4];
+
+    const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
+    uint16_t tmp;
+    tmp = 0xe000 >> offset_x;
+    clrmask = ~(tmp >> 8);
+    clrmask_crossing = ~(tmp & 0xff);
+    for (int i = 0; i < 4; i++) {
+        tmp = dithermap[i] >> offset_x;
+        setmask[i] = tmp >> 8;
+        setmask_crossing[i] = tmp & 0xff;
+    }
+    if (!crossing) {
+        for (int i = 0; i < 160; i++) {
+            uint8_t b = *wrptr;
+            b &= clrmask;
+            b |= setmask[pixels[i]];
+            *wrptr = b;
+            wrptr += stride;
+        }
+    }
+    else {
+        for (int i = 0; i < 160; i++) {
+            uint8_t b = *wrptr;
+            b &= clrmask;
+            b |= setmask[pixels[i]];
+            *wrptr++ = b;
+            b = *wrptr;
+            b &= clrmask_crossing;
+            b |= setmask_crossing[pixels[i]];
+            *wrptr = b;
+            wrptr += stride;
+        }
+    }
+
+    PROF_END(PROF_LCD);
+}
 
 bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
 {
+    enum gb_init_error_e init_err;
+    size_t save_size = 0;
+    char rom_name[17];
+
     s_ready = false;
-    strlcpy(s_last_error, "not initialized", sizeof(s_last_error));
+    set_last_error("not initialized");
 
     if (rom == NULL || rom_size < 0x150) {
-        strlcpy(s_last_error, "rom buffer missing or too small", sizeof(s_last_error));
+        set_last_error("rom buffer missing or too small");
         return false;
     }
 
-    /* Point the PICboy ROM "array" at the caller's buffer (already in SRAM
-     * or PSRAM, allocated by main.c).  PICboy.c declares this as a plain
-     * pointer in PICBOY_EMBEDDED mode so array accesses go through the MMU. */
-    gb_mem_rom = (unsigned char *)rom;
+    memset(&s_gb, 0, sizeof(s_gb));
 
-    /* Reset emulator mode so gb_initialize() auto-detects GBC/DMG from the
-     * ROM header byte 0x0143. */
-    gb_mode = UNK;
+    s_rom = rom;
+    s_rom_size = rom_size;
 
-    /* Build the DMG colour-palette look-up table (needed before init). */
-    gb_palette_arrange();
+    free(s_cart_ram);
+    s_cart_ram = NULL;
+    s_cart_ram_size = 0;
 
-    /* Zero cart RAM so saves don't contain garbage. */
-    memset(gb_mem_eram, 0, sizeof(gb_mem_eram));
+    init_err = gb_init(&s_gb,
+                       gb_rom_read_cb,
+                       gb_rom_read16_cb,
+                       gb_rom_read32_cb,
+                       gb_cart_ram_read_cb,
+                       gb_cart_ram_write_cb,
+                       gb_error_cb,
+                       NULL);
 
-    /* Zero the screen buffer. */
-    memset(gb_game_screen_buffer, 0, sizeof(gb_game_screen_buffer));
-
-    /* Initialise the emulator core (sets gb_mode, MBC type, registers …).
-     * Returns 0 for unsupported configurations but still populates gb_cart_mbc. */
-    gb_initialize();
-
-    if (gb_cart_mbc == 0xFF) {
-        strlcpy(s_last_error, "unsupported cart / MBC type", sizeof(s_last_error));
+    if (init_err != GB_INIT_NO_ERROR) {
+        ESP_LOGE(TAG, "gb_init failed: %d", (int)init_err);
+        set_last_error("gb_init failed");
         return false;
     }
 
-    /* For DMG mode, override the default pea-soup palette with a clean
-     * greyscale ramp so the EPD luminance conversion gives correct shades. */
-    if (gb_mode == DMG) {
-        for (int i = 0; i < 4; i++) {
-            gb_palette_defined[i]     = s_dmg_gray[i]; /* BGP  */
-            gb_palette_defined[i + 4] = s_dmg_gray[i]; /* OBP0 */
-            gb_palette_defined[i + 8] = s_dmg_gray[i]; /* OBP1 */
+    if (gb_get_save_size_s(&s_gb, &save_size) == 0 && save_size > 0) {
+        s_cart_ram = calloc(1, save_size);
+        if (s_cart_ram == NULL) {
+            set_last_error("cart ram alloc failed");
+            return false;
         }
+        s_cart_ram_size = save_size;
     }
 
-    /* Initialise I2S audio output; PICboy fills its own audio buffer and
-     * we feed samples to the ring buffer once per frame. */
+    #if ENABLE_LCD
+    gb_init_lcd(&s_gb, lcd_draw_line_cb);
+    #endif
+    s_gb.direct.joypad = 0xFF;
+
+    /* Initialize audio system (also inits the APU) */
     audio_init();
 
-    ESP_LOGI(TAG, "PICboy initialised: mode=%s  MBC=%lu  ROM=%u B",
-             gb_mode == GBC ? "GBC" : "DMG",
-             gb_cart_mbc,
-             (unsigned)rom_size);
+    ESP_LOGI(TAG, "Walnut-CGB initialized. ROM title: %s", gb_get_rom_name(&s_gb, rom_name));
 
     s_ready = true;
-    strlcpy(s_last_error, "ok", sizeof(s_last_error));
+    set_last_error("ok");
     return true;
 }
-
-/* ------------------------------------------------------------------ */
 
 void paperboy_gb_set_buttons(uint8_t pressed_mask)
 {
-    if (!s_ready) return;
-
-    /* PICboy button byte: 0 = pressed, 1 = released.
-     * GB_BTN_* in gbemu.h uses 1 = pressed — so we invert.
-     * Bit layout is identical between the two conventions. */
-    gb_game_buttons_previous = gb_game_buttons_current;
-    gb_game_buttons_current  = (uint8_t)(~pressed_mask);
-}
-
-/* ------------------------------------------------------------------ */
-
-/*
- * EPD rendering: convert the PICboy RGB555 frame-buffer to 1-bpp EPD video FB.
- *
- * gb_game_screen_buffer layout:  [y * GB_LCD_WIDTH + x], y=0..143, x=0..159
- * EPD video FB:                  432 columns × 160 rows, 1 bpp, pitch = 54 B
- *
- *   • 90° CW rotation: GB (x, y) → EPD col = (143-y)*3,  EPD row = x
- *   • 3× horizontal scale via the dither pattern
- *   • Luminance → 4-level shade → 3-pixel Bayer pattern
- */
-static IRAM_ATTR void picboy_render_epd(uint8_t *fb)
-{
-    /* 3-bit left-aligned dither pattern per shade (0=white … 3=black). */
-    static const uint16_t dithermap[4] = { 0x0000u, 0x2000u, 0x6000u, 0xe000u };
-
-    for (int line = 0; line < GB_LCD_HEIGHT; line++) {
-
-        const int      target_x = (GB_LCD_HEIGHT - 1 - line) * 3;
-        uint8_t *const row_base = fb + (target_x >> 3);
-        const int      offset_x = target_x & 7;
-        const bool     crossing = (offset_x >= 6);
-        const uint32_t stride   = crossing ? 53u : 54u;
-
-        /* Pre-compute masks once per column (= per GB scanline). */
-        uint8_t clrmask, clrmask_x;
-        uint8_t setmask[4], setmask_x[4];
-
-        uint16_t tmp = (uint16_t)(0xe000u >> offset_x);
-        clrmask   = ~(uint8_t)(tmp >> 8);
-        clrmask_x = ~(uint8_t)(tmp & 0xffu);
-
-        for (int k = 0; k < 4; k++) {
-            tmp          = (uint16_t)(dithermap[k] >> offset_x);
-            setmask[k]   = (uint8_t)(tmp >> 8);
-            setmask_x[k] = (uint8_t)(tmp & 0xffu);
-        }
-
-        const uint16_t *srcrow = &gb_game_screen_buffer[line * GB_LCD_WIDTH];
-        uint8_t        *wrptr  = row_base;
-
-        if (!crossing) {
-            for (int i = 0; i < GB_LCD_WIDTH; i++) {
-                const uint16_t px    = srcrow[i];
-                const unsigned r     = (px >> 10) & 0x1fu;
-                const unsigned g     = (px >>  5) & 0x1fu;
-                const unsigned b     =  px        & 0x1fu;
-                const unsigned lum   = (r + g + b) / 3u;
-                const unsigned shade = 3u - (lum >> 3);
-
-                uint8_t bv = *wrptr;
-                bv = (uint8_t)((bv & clrmask) | setmask[shade]);
-                *wrptr = bv;
-                wrptr += stride;
-            }
-        } else {
-            for (int i = 0; i < GB_LCD_WIDTH; i++) {
-                const uint16_t px    = srcrow[i];
-                const unsigned r     = (px >> 10) & 0x1fu;
-                const unsigned g     = (px >>  5) & 0x1fu;
-                const unsigned b     =  px        & 0x1fu;
-                const unsigned lum   = (r + g + b) / 3u;
-                const unsigned shade = 3u - (lum >> 3);
-
-                uint8_t bv = *wrptr;
-                bv = (uint8_t)((bv & clrmask) | setmask[shade]);
-                *wrptr++ = bv;
-                bv = *wrptr;
-                bv = (uint8_t)((bv & clrmask_x) | setmask_x[shade]);
-                *wrptr = bv;
-                wrptr += stride;
-            }
-        }
+    if (!s_ready) {
+        return;
     }
-}
 
-/* ------------------------------------------------------------------ */
+    s_gb.direct.joypad = (uint8_t)(~pressed_mask);
+}
 
 bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
 {
-    if (!s_ready) return false;
-
-    /* Run PICboy until it sets gb_game_draw (= VBlank reached). */
-    gb_game_draw = 0;
-
-    while (!gb_game_draw) {
-        gb_run();
-        gb_updates();
-        gb_interrupts();
+    if (!s_ready) {
+        return false;
     }
 
-    /* RTC: tick once per emulated second (every 60 frames). */
-    gb_ext_rtc_counter++;
-    if (gb_ext_rtc_counter >= 60) {
-        gb_ext_rtc_counter = 0;
-        gb_clock();
+    if (skip_render) {
+        /* Tell the emulator core to skip all pixel rendering this frame.
+         * __gb_draw_line() returns immediately when frame_skip is true and
+         * frame_skip_count is 0, skipping all sprite/background work. */
+        s_gb.direct.frame_skip = true;
+        s_gb.display.frame_skip_count = 0;
+    } else {
+        s_framebuffer = fb;
+        memset(s_framebuffer, 0, 160*144/8); // debug
     }
 
-    /* Feed PICboy's mono audio buffer to the I2S ring as stereo pairs.
-     *
-     * In embedded mode gb_game_audio_section never toggles (that happens
-     * inside openal_play() which is compiled out).  The audio buffer is a
-     * circular ring of AUDIO_LEN unsigned-16 samples; gb_game_audio_write
-     * is the next-write index.  We track the last position we read from and
-     * push only the newly-produced samples each frame (~546 per frame). */
-    {
-        static int16_t     s_stereo[AUDIO_LEN * 2];
-        static unsigned int s_audio_read = 0;
+    gb_run_frame_dualfetch(&s_gb);
 
-        const unsigned int w = gb_game_audio_write;
-        unsigned int count;
+    /* Restore frame_skip to off so normal rendering resumes next frame. */
+    s_gb.direct.frame_skip = false;
+    s_gb.display.frame_skip_count = 0;
 
-        if (w >= s_audio_read)
-            count = w - s_audio_read;
-        else
-            count = AUDIO_LEN - s_audio_read + w;
-
-        if (count > AUDIO_LEN) count = AUDIO_LEN; /* sanity */
-
-        for (unsigned int i = 0; i < count; i++) {
-            const unsigned int idx = (s_audio_read + i) % AUDIO_LEN;
-            const int16_t s = (int16_t)((int32_t)gb_game_audio_buffer[idx] - 0x8000);
-            s_stereo[i * 2]     = s;
-            s_stereo[i * 2 + 1] = s;
-        }
-        s_audio_read = w;
-
-        if (count > 0)
-            audio_push_samples(s_stereo, count);
-    }
-
-    /* Render the completed frame to the EPD video framebuffer. */
-    if (!skip_render && fb != NULL) {
-        PROF_BEGIN(PROF_LCD);
-        picboy_render_epd(fb);
-        PROF_END(PROF_LCD);
-    }
+    /* Audio synthesis is now driven by the audio task at the I2S hardware
+     * clock rate, decoupled from emulation speed.  Nothing to do here. */
 
     return true;
 }
 
-/* ------------------------------------------------------------------ */
+const uint8_t *paperboy_gb_get_framebuffer(void)
+{
+    if (!s_ready) {
+        return NULL;
+    }
+
+    return s_framebuffer;
+}
 
 bool paperboy_gb_is_ready(void)
 {
