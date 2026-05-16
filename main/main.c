@@ -17,6 +17,7 @@
 #include "gbemu.h"
 #include "background.h"
 #include "touch.h"
+#include "ui.h"
 
 static const char *TAG = "paperboy";
 static sdmmc_card_t *s_sd_card;
@@ -146,57 +147,7 @@ static bool load_gb_rom_from_file(const char *path)
     return true;
 }
 
-static void probe_sd_file(const char *path)
-{
-    FILE *f;
-    uint8_t probe[16] = {0};
-    size_t n;
-    char hex[(sizeof(probe) * 3) + 1];
-    size_t pos = 0;
-    size_t i;
-
-    f = fopen(path, "rb");
-    if (f == NULL) {
-        ESP_LOGW(TAG, "Cannot open SD file: %s", path);
-        return;
-    }
-
-    n = fread(probe, 1, sizeof(probe), f);
-    fclose(f);
-
-    for (i = 0; i < n; i++) {
-        pos += (size_t)snprintf(&hex[pos], sizeof(hex) - pos, "%02X ", probe[i]);
-    }
-    if (pos > 0) {
-        hex[pos - 1] = '\0';
-    }
-    ESP_LOGI(TAG, "Read %u bytes from %s: %s", (unsigned)n, path, (n > 0) ? hex : "<empty>");
-}
-
-// Our FB is a 432x160 buffer
-static void ui_put_pixel_raw(uint8_t *fb, int x, int y, bool c) {
-    uint8_t *p = &(fb[y * 54 + x / 8]);
-    uint8_t mask = 0x80 >> (x % 8);
-    if (c)
-        *p |= mask;
-    else
-        *p &= ~mask;
-}
-
-// Input X,Y ranges from (0,0) to (159,143)
-void ui_put_pixel(uint8_t *fb, int x, int y, int c) {
-    for (int i = 0; i < 3; i++) {
-        ui_put_pixel_raw(fb, (143 - y) * 3 + i, x, (i < c));
-    }
-}
-
-void ui_put_rect(uint8_t *fb, int x0, int y0, int x1, int y1, int c) {
-    for (int y = y0; y < y1; y++) {
-        for (int x = x0; x < x1; x++) {
-            ui_put_pixel(fb, x, y, c);
-        }
-    }
-}
+/* ui_put_pixel / ui_put_rect are now defined in ui.c (see ui.h). */
 
 void app_main(void)
 {
@@ -234,11 +185,12 @@ void app_main(void)
 
     sd_err = sdcard_mount();
     if (sd_err == ESP_OK) {
-        const char *rom_path = SD_MOUNT_POINT "/game/PokemonBlue.gb";
-        probe_sd_file(rom_path);
-        if (load_gb_rom_from_file(rom_path)) {
-            rom_data = s_rom_data;
-            rom_size = s_rom_size;
+        char rom_path[256];
+        if (ui_rom_picker(SD_MOUNT_POINT, rom_path, sizeof(rom_path))) {
+            if (load_gb_rom_from_file(rom_path)) {
+                rom_data = s_rom_data;
+                rom_size = s_rom_size;
+            }
         }
     } else {
         ESP_LOGW(TAG, "SD init skipped, falling back to built-in stub ROM");
