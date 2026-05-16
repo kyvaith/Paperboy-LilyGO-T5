@@ -1,0 +1,21 @@
+menu "Paperboy Audio"
+
+    config PAPERBOY_BUZZER_GPIO
+        int "Buzzer GPIO number"
+        default 45
+        help
+            GPIO pin connected to the M5PaperS3 passive buzzer.
+            The I2S PDM TX bitstream is output on this pin; an RC low-pass
+            filter (e.g. 100 Ω + 100 nF) between the pin and the buzzer
+            recovers the audio waveform.
+
+    config PAPERBOY_AUDIO_RING_FRAMES
+        int "Audio ring buffer size in GB frames"
+        default 6
+        range 2 16
+        help
+            Number of Game Boy audio frames to buffer.  Each frame is ~550
+            mono samples (~16.8 ms at 32768 Hz).  Larger values absorb more
+            emulation jitter at the cost of latency.
+
+endmenu

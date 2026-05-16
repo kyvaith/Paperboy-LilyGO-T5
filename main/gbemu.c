@@ -5,12 +5,19 @@
 #include <esp_attr.h>
 
 #include "gbemu.h"
+#include "audio.h"
 
 /* Walnut-CGB feature flags – must be set before including walnut_cgb.h */
 #define WALNUT_FULL_GBC_SUPPORT 0   /* DMG-only, no CGB colour mode */
 #define WALNUT_GB_12_COLOUR     0   /* must match WALNUT_FULL_GBC_SUPPORT */
 #define WALNUT_GB_32BIT_DMA     1   /* ESP32-S3 handles unaligned 32-bit fine */
-#define ENABLE_SOUND            0   /* no audio */
+#define ENABLE_SOUND            1   /* Enable minigb_apu audio */
+#define ENABLE_LCD              0
+
+/* Forward declarations for audio callbacks used by walnut_cgb.h */
+uint8_t audio_read(uint16_t addr);
+void audio_write(uint16_t addr, uint8_t val);
+
 #include "walnut_cgb.h"
 
 static const char *TAG = "gbemu";
@@ -27,6 +34,18 @@ static char s_last_error[128];
 static void set_last_error(const char *msg)
 {
     strlcpy(s_last_error, msg, sizeof(s_last_error));
+}
+
+/* Audio I/O callbacks – called by Walnut-CGB when accessing APU registers.
+ * The APU state lives in audio.c; route through its public API. */
+uint8_t audio_read(uint16_t addr)
+{
+    return audio_apu_read(addr);
+}
+
+void audio_write(uint16_t addr, uint8_t val)
+{
+    audio_apu_write(addr, val);
 }
 
 static uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
@@ -200,8 +219,13 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
         s_cart_ram_size = save_size;
     }
 
+    #if ENABLE_LCD
     gb_init_lcd(&s_gb, lcd_draw_line_cb);
+    #endif
     s_gb.direct.joypad = 0xFF;
+
+    /* Initialize audio system (also inits the APU) */
+    audio_init();
 
     ESP_LOGI(TAG, "Walnut-CGB initialized. ROM title: %s", gb_get_rom_name(&s_gb, rom_name));
 
@@ -229,6 +253,8 @@ bool paperboy_gb_run_frame(uint8_t *fb)
     memset(s_framebuffer, 0, 160*144/8); // debug
 
     gb_run_frame_dualfetch(&s_gb);
+    /* Audio synthesis is now driven by the audio task at the I2S hardware
+     * clock rate, decoupled from emulation speed.  Nothing to do here. */
 
     return true;
 }

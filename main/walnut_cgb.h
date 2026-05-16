@@ -137,7 +137,7 @@ void __gb_step_cpu_x(struct gb_s *gb);
 
 /* Adds more code to improve LCD rendering accuracy. */
 #ifndef WALNUT_GB_HIGH_LCD_ACCURACY
-# define WALNUT_GB_HIGH_LCD_ACCURACY 1
+# define WALNUT_GB_HIGH_LCD_ACCURACY 0
 #endif
 
 /* Use intrinsic functions. This may produce smaller and faster code. */
