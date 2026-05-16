@@ -250,28 +250,60 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Entering GB render loop");
 
+    /* Maximum number of consecutive rendered frames that may be skipped
+     * (video output suppressed) when the emulator falls behind VSYNC. */
+    #define MAX_FRAME_SKIPS 2
+
     uint32_t last_print = 0;
+    int skip_count = 0;
+    int total_skip_count = 0;
+
+    /* Obtain the first back-buffer and record the current VSYNC epoch. */
+    uint8_t *video_fb = msg_flip();
+    uint32_t vsync_ref = msg_get_vsync_count();
+
     while (1) {
         if (!gb_ok) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
 
-        /* msg_flip blocks for the next 60 Hz video swap, so one GB frame maps
-         * directly to one submitted EPD frame. */
-        uint8_t *video_fb = msg_flip();
+        /* Poll touchscreen and update GB button state every emulated frame. */
+        paperboy_gb_set_buttons(tp_read_buttons());
+
+        bool skip_render = (skip_count > 0);
 
         uint32_t start = esp_timer_get_time();
-        if (!paperboy_gb_run_frame(video_fb)) {
+        if (!paperboy_gb_run_frame(video_fb, skip_render)) {
             ESP_LOGE(TAG, "paperboy_gb_run_frame failed: %s", paperboy_gb_last_error());
             gb_ok = false;
             continue;
         }
-
         uint32_t end = esp_timer_get_time();
-        if ((start - last_print) > 1000000) {
-            ESP_LOGI(TAG, "Last frame time: %lu us", end - start);
+
+        if ((end - last_print) > 1000000) {
+            ESP_LOGI(TAG, "Last frame time: %lu us (skip_count=%d)", end - start, total_skip_count);
             last_print = end;
+            total_skip_count = 0;
+        }
+
+        /* Check whether at least one VSYNC fired while we were rendering. */
+        bool missed = (msg_get_vsync_count() != vsync_ref);
+
+        if (missed && skip_count < MAX_FRAME_SKIPS) {
+            /* We missed VSYNC.  Don't swap buffers — the EPD keeps showing
+             * the last submitted frame.  Run another emulation pass without
+             * rendering to try to catch back up. */
+            skip_count++;
+            total_skip_count++;
+            video_fb  = msg_flip_nowait();
+            vsync_ref = msg_get_vsync_count();
+        } else {
+            /* Either on time, or we've hit the skip cap: submit the last
+             * rendered frame and wait for the next VSYNC. */
+            skip_count = 0;
+            video_fb  = msg_flip();
+            vsync_ref = msg_get_vsync_count();
         }
     }
 }

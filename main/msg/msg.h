@@ -67,4 +67,12 @@ void msg_init(void);
 void msg_start(void);
 void msg_display_image(uint8_t *img, bool to_white);
 void msg_enable_video(bool en);
+// Block until the next VSYNC, swap buffers, and return the new back-buffer.
 uint8_t *msg_flip(void);
+// Return the current back-buffer immediately without waiting for VSYNC or
+// swapping buffers.  The EPD keeps displaying the last submitted front-buffer.
+// Use when a rendered frame will be skipped to catch up after a missed VSYNC.
+uint8_t *msg_flip_nowait(void);
+// Monotonic counter incremented at every EPD frame-start (VSYNC).
+// Read before and after rendering to detect a missed VSYNC.
+uint32_t msg_get_vsync_count(void);

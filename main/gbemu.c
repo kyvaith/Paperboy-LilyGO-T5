@@ -12,7 +12,7 @@
 #define WALNUT_GB_12_COLOUR     0   /* must match WALNUT_FULL_GBC_SUPPORT */
 #define WALNUT_GB_32BIT_DMA     1   /* ESP32-S3 handles unaligned 32-bit fine */
 #define ENABLE_SOUND            1   /* Enable minigb_apu audio */
-#define ENABLE_LCD              0
+#define ENABLE_LCD              1
 
 /* Forward declarations for audio callbacks used by walnut_cgb.h */
 uint8_t audio_read(uint16_t addr);
@@ -243,16 +243,29 @@ void paperboy_gb_set_buttons(uint8_t pressed_mask)
     s_gb.direct.joypad = (uint8_t)(~pressed_mask);
 }
 
-bool paperboy_gb_run_frame(uint8_t *fb)
+bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
 {
     if (!s_ready) {
         return false;
     }
 
-    s_framebuffer = fb;
-    memset(s_framebuffer, 0, 160*144/8); // debug
+    if (skip_render) {
+        /* Tell the emulator core to skip all pixel rendering this frame.
+         * __gb_draw_line() returns immediately when frame_skip is true and
+         * frame_skip_count is 0, skipping all sprite/background work. */
+        s_gb.direct.frame_skip = true;
+        s_gb.display.frame_skip_count = 0;
+    } else {
+        s_framebuffer = fb;
+        memset(s_framebuffer, 0, 160*144/8); // debug
+    }
 
     gb_run_frame_dualfetch(&s_gb);
+
+    /* Restore frame_skip to off so normal rendering resumes next frame. */
+    s_gb.direct.frame_skip = false;
+    s_gb.display.frame_skip_count = 0;
+
     /* Audio synthesis is now driven by the audio task at the I2S hardware
      * clock rate, decoupled from emulation speed.  Nothing to do here. */
 

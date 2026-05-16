@@ -46,6 +46,7 @@ static const char *TAG = "msg";
 static volatile bool dma_done = false;
 static esp_lcd_i80_bus_handle_t i80_bus_handle = NULL;
 static esp_lcd_panel_io_handle_t panel_io_handle = NULL;
+static volatile uint32_t s_vsync_count = 0;
 
 // Triple buffer:
 // prev-buffer: Previous, for partial update use
@@ -122,6 +123,7 @@ static void IRAM_ATTR msg_update_task(void *arg) {
 
     while (true) {
         // JUST KEEP CRANKING
+        s_vsync_count++;
         if (flip_req) {
             front_buffer = !front_buffer;
             flip_req = false;
@@ -414,4 +416,14 @@ uint8_t *msg_flip(void) {
     (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
     return fb[!front_buffer];
+}
+
+uint8_t *msg_flip_nowait(void) {
+    // Return the back-buffer immediately; the EPD keeps showing the current
+    // front-buffer (last submitted frame).  No buffer swap is performed.
+    return fb[!front_buffer];
+}
+
+uint32_t msg_get_vsync_count(void) {
+    return s_vsync_count;
 }
