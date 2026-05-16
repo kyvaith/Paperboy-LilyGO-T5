@@ -32,7 +32,7 @@
 #define EPD_WIDTH           960
 #define EPD_HEIGHT          540
 #define EPD_LINE_PAD        16
-#define EPD_XCK             20000000
+#define EPD_XCK             24000000
 #define EPD_BUSW            8
 
 #define EPD_IMAGE_FIELDS    8

@@ -209,16 +209,6 @@ static const uint8_t TIMER_INPUT_BITS[4] = {9, 3, 5, 7};
 #define CB_SAVE_STATE_MAGIC "\xFA\x43\42sav\n\x1A"
 #define CB_SAVE_STATE_VERSION PGB_VERSION
 
-#define IO_PLAYDATE_EXTENSION_CTL 0x57
-#define IO_PLAYDATE_EXTENSION_CRANK_LO 0x58
-#define IO_PLAYDATE_EXTENSION_CRANK_HI 0x59
-#define IO_PLAYDATE_EXTENSION_ACCX_LO 0x5A
-#define IO_PLAYDATE_EXTENSION_ACCX_HI 0x5B
-#define IO_PLAYDATE_EXTENSION_ACCY_LO 0x5C
-#define IO_PLAYDATE_EXTENSION_ACCY_HI 0x5D
-#define IO_PLAYDATE_EXTENSION_ACCZ_LO 0x5E
-#define IO_PLAYDATE_EXTENSION_ACCZ_HI 0x5F
-
 #if ENABLE_LCD
 /* Bit mask for the shade of pixel to display */
 #define LCD_COLOUR 0x03
@@ -346,21 +336,17 @@ extern volatile int g_trace_frames_remaining;
 #else
 #ifdef ITCM_CORE
 #define __core_dmg                                                        \
-    __attribute__((optimize("Os"))) __attribute__((section(".itcm.dmg"))) \
-    __attribute__((short_call))
+    CB_IRAM_CODE __attribute__((optimize("Os"))) __attribute__((short_call))
 #define __core_dmg_section(x)                                                \
-    __attribute__((optimize("Os"))) __attribute__((section(".itcm.dmg." x))) \
-    __attribute__((short_call))
+    CB_IRAM_CODE __attribute__((optimize("Os"))) __attribute__((short_call))
 #define __core_cgb                                                        \
-    __attribute__((optimize("Os"))) __attribute__((section(".itcm.cgb"))) \
-    __attribute__((short_call))
+    CB_IRAM_CODE __attribute__((optimize("Os"))) __attribute__((short_call))
 #define __core_cgb_section(x)                                                \
-    __attribute__((optimize("Os"))) __attribute__((section(".itcm.cgb." x))) \
-    __attribute__((short_call))
+    CB_IRAM_CODE __attribute__((optimize("Os"))) __attribute__((short_call))
 #else
-#define __core_dmg __attribute__((optimize("Os"))) __attribute__((section(".text.itcm.dmg")))
+#define __core_dmg CB_IRAM_CODE __attribute__((optimize("Os")))
 #define __core_dmg_section(x) __core_dmg
-#define __core_cgb __attribute__((optimize("Os"))) __attribute__((section(".text.itcm.cgb")))
+#define __core_cgb CB_IRAM_CODE __attribute__((optimize("Os")))
 #define __core_cgb_section(x) __core_cgb
 #endif
 #endif
@@ -456,7 +442,7 @@ const char* gb_get_rom_name(uint8_t* gb_rom, char* title_str)
  * The logic is inspired by SameBoy's RTC implementation.
  *
  */
-__section__(".text.cb") void gb_catch_up_rtc_direct(gb_s* gb, unsigned int seconds_to_add)
+CB_FAST_CODE void gb_catch_up_rtc_direct(gb_s* gb, unsigned int seconds_to_add)
 {
     if ((gb->rtc_bits.high & 0x40) || seconds_to_add == 0)
     {
@@ -504,7 +490,7 @@ __section__(".text.cb") void gb_catch_up_rtc_direct(gb_s* gb, unsigned int secon
  * gb_catch_up_rtc_direct() function. It is kept for reference and potential
  * future use in a cycle-accurate timing model.
  */
-__section__(".text.cb") void gb_tick_rtc(gb_s* gb)
+CB_FAST_CODE void gb_tick_rtc(gb_s* gb)
 {
     /* is timer running? */
     if ((gb->cart_rtc[4] & 0x40) == 0)
@@ -542,7 +528,7 @@ u8 reverse_bits_u8(u8 b);
  * Set initial values in RTC.
  * Should be called after gb_init().
  */
-__section__(".text.cb") void gb_set_rtc(gb_s* gb, const struct tm* const time)
+CB_FAST_CODE void gb_set_rtc(gb_s* gb, const struct tm* const time)
 {
     gb->cart_rtc[0] = time->tm_sec;
     gb->cart_rtc[1] = time->tm_min;
@@ -561,7 +547,7 @@ __section__(".text.cb") void gb_set_rtc(gb_s* gb, const struct tm* const time)
     memcpy(gb->latched_rtc, gb->cart_rtc, sizeof(gb->latched_rtc));
 }
 
-__section__(".text.cb") static void __gb_update_tac(gb_s* gb)
+CB_FAST_CODE static void __gb_update_tac(gb_s* gb)
 {
     static const uint8_t TAC_CYCLES[4] = {10, 4, 6, 8};
 
@@ -571,7 +557,7 @@ __section__(".text.cb") static void __gb_update_tac(gb_s* gb)
     gb->gb_reg.tac_input_bit = TIMER_INPUT_BITS[gb->gb_reg.tac_rate];
 }
 
-__section__(".text.cb") static void __gb_timer_edge_tick(gb_s* gb)
+CB_FAST_CODE static void __gb_timer_edge_tick(gb_s* gb)
 {
     gb->gb_reg.TIMA++;
     if (gb->gb_reg.TIMA == 0x00)
@@ -580,7 +566,7 @@ __section__(".text.cb") static void __gb_timer_edge_tick(gb_s* gb)
     }
 }
 
-__section__(".text.cb") static void __gb_update_selected_bank_addr(gb_s* gb)
+CB_FAST_CODE static void __gb_update_selected_bank_addr(gb_s* gb)
 {
     // swappable cartridge ROM bank
     int32_t offset = ((int)(gb->selected_rom_bank & gb->num_rom_banks_mask) - 1) * ROM_BANK_SIZE;
@@ -605,7 +591,7 @@ __section__(".text.cb") static void __gb_update_selected_bank_addr(gb_s* gb)
     gb->vram_base = gb->vram - VRAM_ADDR + VRAM_SIZE * vram_bank;
 }
 
-__section__(".text.cb") static void __gb_update_zero_bank_addr(gb_s* gb)
+CB_FAST_CODE static void __gb_update_zero_bank_addr(gb_s* gb)
 {
     for (int i = 0; i < 4; ++i)
     {
@@ -613,7 +599,7 @@ __section__(".text.cb") static void __gb_update_zero_bank_addr(gb_s* gb)
     }
 }
 
-__section__(".text.cb") static void __gb_update_selected_cart_bank_addr(gb_s* gb)
+CB_FAST_CODE static void __gb_update_selected_cart_bank_addr(gb_s* gb)
 {
     // NULL indicates special access, must do _full version
     gb->selected_cart_bank_addr = NULL;
@@ -644,7 +630,7 @@ __section__(".text.cb") static void __gb_update_selected_cart_bank_addr(gb_s* gb
     }
 }
 
-__section__(".text.cb") static void __gb_init_memory_pointers(gb_s* gb)
+CB_FAST_CODE static void __gb_init_memory_pointers(gb_s* gb)
 {
     gb->wram_base[0] = gb->wram - WRAM_0_ADDR;
     gb->wram_base[1] = gb->wram - WRAM_1_ADDR + 0x1000;
@@ -653,7 +639,7 @@ __section__(".text.cb") static void __gb_init_memory_pointers(gb_s* gb)
     gb->vram_base = gb->vram - VRAM_ADDR;
 }
 
-__section__(".text.cb") static void __gb_update_map_pointers(gb_s* gb)
+CB_FAST_CODE static void __gb_update_map_pointers(gb_s* gb)
 {
     gb->display.bg_map_base =
         gb->vram + ((gb->gb_reg.LCDC & LCDC_BG_MAP) ? VRAM_BMAP_2 : VRAM_BMAP_1);
@@ -861,17 +847,15 @@ __section__(".rare.cb") static void __gb_rare_write(
             /* Turn off boot ROM (not supported) */
             return;
 
-        case IO_PLAYDATE_EXTENSION_CTL:
-            gb->direct.enable_xram = !!(val & 2);
-            gb->direct.ext_crank_menu_indexing = !!(val & 4);
-            return;
-
-        case IO_PLAYDATE_EXTENSION_CRANK_LO:
-            gb->direct.crank_menu_delta = 0;
-            return;
-
-        case IO_PLAYDATE_EXTENSION_CRANK_HI:
-            gb->direct.crank_menu_accumulation = 0x8000;
+        case 0x57:
+        case 0x58:
+        case 0x59:
+        case 0x5A:
+        case 0x5B:
+        case 0x5C:
+        case 0x5D:
+        case 0x5E:
+        case 0x5F:
             return;
 
         /* Interrupt Enable Register */
@@ -907,6 +891,15 @@ __section__(".rare.cb") static uint8_t __gb_rare_read(gb_s* gb, const uint16_t a
             // unimplemented CGB-only registers. On a DMG, reading these returns 0xFF.
 
         case 0x56:  // RP (CGB Infrared Port)
+        case 0x57:
+        case 0x58:
+        case 0x59:
+        case 0x5A:
+        case 0x5B:
+        case 0x5C:
+        case 0x5D:
+        case 0x5E:
+        case 0x5F:
         case 0x68:  // BCPS (CGB BG Palette Spec)
         case 0x69:  // BCPD (CGB BG Palette Data)
         case 0x6A:  // OCPS (CGB OBJ Palette Spec)
@@ -978,29 +971,6 @@ __section__(".rare.cb") static uint8_t __gb_rare_read(gb_s* gb, const uint16_t a
                 return (gb->cgb_ff75 << 4) | ~(7 << 4);
             return 0xFF;
 
-        case IO_PLAYDATE_EXTENSION_CTL:
-            return gb->direct.crank_docked | 0x1C;
-
-        case 0x5A ... 0x5F:
-            return gb->direct.peripherals[((addr & 0xFF) - 0x58) >> 1];
-            
-        case 0x58:
-        case 0x59:
-            if (gb->direct.ext_crank_menu_indexing)
-            {
-                // crank register is handled specially in menu mode
-                if (addr == 0xFF58)
-                {
-                    return gb->direct.crank_menu_delta;
-                }
-                else if (addr == 0xFF59)
-                {
-                    return 0x80 + (((int)gb->direct.crank_menu_accumulation - 0x8000) * 0x7F) /
-                                      (CRANK_MENU_DELTA_BINANGLE);
-                }
-            }
-
-            return gb->direct.peripherals[((addr & 0xFF) - 0x58) / 2] >> (8 * (addr % 2));
         /* Interrupt Enable Register */
         case 0xFF:
             return gb->gb_reg.IE;
@@ -1374,7 +1344,7 @@ rare_read:
  * Handles a clock tick for the MBC7 EEPROM.
  * This function is called on the rising edge of the EEPROM's CLK pin.
  */
-__section__(".text.cb") static void __gb_mbc7_eeprom_clock(gb_s* gb)
+CB_FAST_CODE static void __gb_mbc7_eeprom_clock(gb_s* gb)
 {
     const bool di = !!(gb->mbc7.eeprom_pins & 0x02);
 

@@ -6,6 +6,7 @@
 
 #include "gbemu.h"
 #include "audio.h"
+#include "msg/msg.h"
 #include "profiler.h"
 
 #define PGB_CGB                 0
@@ -30,8 +31,10 @@ static size_t s_rom_size;
 static uint8_t *s_cart_ram;
 static size_t s_cart_ram_size;
 static uint8_t s_lcd[LCD_BUFFER_BYTES] __attribute__((aligned(32)));
+static uint8_t s_previous_lcd[LCD_BUFFER_BYTES] __attribute__((aligned(32)));
 static uint8_t s_wram[WRAM_SIZE_CGB] __attribute__((aligned(32)));
 static uint8_t s_vram[VRAM_SIZE_CGB] __attribute__((aligned(32)));
+static uint8_t s_epd_shadow[EPD_VIDEO_FB_SIZE] __attribute__((aligned(32)));
 static uint8_t *s_framebuffer;
 static bool s_ready;
 static char s_last_error[128];
@@ -90,11 +93,29 @@ static inline uint8_t gb_lcd_get_pixel(const uint8_t *lcd, unsigned x, unsigned 
     return (packed >> shift) & 0x03u;
 }
 
-static void blit_lcd_to_epd(uint8_t *fb)
+static bool lcd_line_changed(unsigned line)
+{
+    const size_t row_offset = line * LCD_WIDTH_PACKED;
+
+    return memcmp(&s_lcd[row_offset], &s_previous_lcd[row_offset], LCD_WIDTH_PACKED) != 0;
+}
+
+static void copy_lcd_line(unsigned line)
+{
+    const size_t row_offset = line * LCD_WIDTH_PACKED;
+
+    memcpy(&s_previous_lcd[row_offset], &s_lcd[row_offset], LCD_WIDTH_PACKED);
+}
+
+static void blit_lcd_to_epd(uint8_t *fb, const uint16_t *dirty_lines)
 {
     const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
 
     for (unsigned line = 0; line < GB_LCD_HEIGHT; line++) {
+        if (dirty_lines != NULL && ((dirty_lines[line >> 4] >> (line & 0xFu)) & 1u) == 0u) {
+            continue;
+        }
+
         const unsigned target_x = (GB_LCD_HEIGHT - 1u - line) * 3u;
         uint8_t *wrptr = &(fb[target_x / 8u]);
         const unsigned offset_x = target_x % 8u;
@@ -166,8 +187,10 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
 
     memset(&s_gb, 0, sizeof(s_gb));
     memset(s_lcd, 0, sizeof(s_lcd));
+    memset(s_previous_lcd, 0, sizeof(s_previous_lcd));
     memset(s_wram, 0, sizeof(s_wram));
     memset(s_vram, 0, sizeof(s_vram));
+    memset(s_epd_shadow, 0, sizeof(s_epd_shadow));
 
     s_rom = (uint8_t *)rom;
     s_rom_size = rom_size;
@@ -233,6 +256,8 @@ void paperboy_gb_set_buttons(uint8_t pressed_mask)
 bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
 {
     void (*run_frame)(gb_s *) = gb_run_frame__dmg;
+    uint16_t dirty_lines[GB_LCD_HEIGHT / 16] = {0};
+    bool any_dirty = false;
 
     if (!s_ready) {
         return false;
@@ -242,7 +267,6 @@ bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
 
     if (!skip_render) {
         s_framebuffer = fb;
-        memset(s_framebuffer, 0, GB_LCD_WIDTH * GB_LCD_HEIGHT / 8);
     }
 
     run_frame(&s_gb);
@@ -251,7 +275,20 @@ bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
 
     if (!skip_render) {
         PROF_BEGIN(PROF_LCD);
-        blit_lcd_to_epd(s_framebuffer);
+        for (unsigned line = 0; line < GB_LCD_HEIGHT; line++) {
+            if (!lcd_line_changed(line)) {
+                continue;
+            }
+
+            dirty_lines[line >> 4] |= (uint16_t)(1u << (line & 0xFu));
+            copy_lcd_line(line);
+            any_dirty = true;
+        }
+
+        if (any_dirty) {
+            blit_lcd_to_epd(s_epd_shadow, dirty_lines);
+        }
+        memcpy(s_framebuffer, s_epd_shadow, sizeof(s_epd_shadow));
         PROF_END(PROF_LCD);
     }
 

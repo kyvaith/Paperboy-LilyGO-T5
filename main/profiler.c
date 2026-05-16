@@ -6,6 +6,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "paperboy_config.h"
+
 static const char *TAG = "prof";
 
 /* Timestamp (µs) taken at profiler_begin(). */
@@ -88,10 +90,9 @@ void profiler_frame_end(bool skipped)
                                                  memory_order_relaxed);
     float ms_audio = (float)audio_us * inv_frames * 0.001f;
 
-    float ms_total = ms_cpu + ms_lcd + ms_flip + ms_touch + ms_audio;
+    float ms_total = ms_cpu + ms_lcd + ms_touch;
 
-    /* Target: 16.67 ms per frame at 60 fps */
-    const float budget_ms  = 1000.0f / 60.0f;
+    const float budget_ms = 17.7f;
     float budget_pct = 100.0f * ms_total / budget_ms;
 
     ESP_LOGI(TAG, "%" PRIu32 " fr (%" PRIu32 " skip) "

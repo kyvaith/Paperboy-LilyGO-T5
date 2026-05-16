@@ -8,10 +8,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <esp_attr.h>
+
 #define FORCE_INLINE __attribute__((always_inline)) inline
 
 #define __section__(x)
-#define __shell
+#define CB_IRAM_CODE __attribute__((section(".iram1.pgb")))
+#define __shell CB_IRAM_CODE
+#define CB_FAST_CODE CB_IRAM_CODE
 
 #define likely(x) (__builtin_expect(!!(x), 1))
 #define unlikely(x) (__builtin_expect(!!(x), 0))
@@ -27,8 +31,6 @@
 #ifndef MIN
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #endif
-
-#define CRANK_MENU_DELTA_BINANGLE 0x2800
 
 enum cgb_support_e
 {

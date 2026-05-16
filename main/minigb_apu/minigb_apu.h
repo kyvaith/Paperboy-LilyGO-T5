@@ -35,7 +35,8 @@ typedef int32_t audio_sample_t;
 #define VERTICAL_SYNC		(DMG_CLOCK_FREQ/SCREEN_REFRESH_CYCLES)
 
 /* Number of audio samples in each channel. */
-#define AUDIO_SAMPLES		((unsigned)(AUDIO_SAMPLE_RATE / VERTICAL_SYNC))
+//#define AUDIO_SAMPLES		((unsigned)(AUDIO_SAMPLE_RATE / VERTICAL_SYNC))
+#define AUDIO_SAMPLES		704
 /* Number of audio channels. The audio output is in interleaved stereo format.*/
 #define AUDIO_CHANNELS		2
 /* Number of audio samples output in each audio_callback call. */

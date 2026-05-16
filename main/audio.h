@@ -6,11 +6,21 @@
 /**
  * Initialize I2S PDM TX audio output.
  *
- * Allocates the internal ring buffer, configures the I2S peripheral in PDM TX
- * mode, and starts the audio output task.  Must be called once before any
- * other audio_* functions.
+ * Configures the I2S peripheral in PDM TX mode, resets the APU state, and
+ * prepares the frame-driven audio path. Must be called once before any other
+ * audio_* functions.
  */
 void audio_init(void);
+
+/**
+ * Run the frame-budgeted audio service.
+ *
+ * Intended to be called from the CPU1 display loop once per display frame.
+ * It synthesizes queued APU samples, pushes them into the software ring, pumps
+ * as much queued PCM into the I2S DMA as possible without blocking, and pads
+ * the configured audio budget when it finishes early.
+ */
+void audio_service_frame(void);
 
 /**
  * Push one Game Boy frame worth of stereo PCM samples into the ring buffer.

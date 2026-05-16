@@ -36,6 +36,8 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 // App includes
+#include "audio.h"
+#include "paperboy_config.h"
 #include "msg.h"
 
 //#define TIME_PRINT
@@ -61,6 +63,8 @@ static volatile bool img_to_white;
 static volatile bool flip_req;
 static volatile bool enable_video;
 static TaskHandle_t flip_waiter_task;
+
+#define FRAME_TARGET_US ((int64_t)PAPERBOY_FRAME_TIME_MS * 1000)
 
 // Ping-pong DMA buffer
 static uint8_t *dma_buf[2];
@@ -122,6 +126,8 @@ static void IRAM_ATTR msg_update_task(void *arg) {
 #endif
 
     while (true) {
+        int64_t frame_start_us = esp_timer_get_time();
+
         // JUST KEEP CRANKING
         s_vsync_count++;
         if (flip_req) {
@@ -289,6 +295,13 @@ static void IRAM_ATTR msg_update_task(void *arg) {
             printed = true;
         }
 #endif
+
+        audio_service_frame();
+
+        // int64_t frame_elapsed_us = esp_timer_get_time() - frame_start_us;
+        // if (FRAME_TARGET_US > 0 && frame_elapsed_us < FRAME_TARGET_US) {
+        //     ets_delay_us((uint32_t)(FRAME_TARGET_US - frame_elapsed_us));
+        // }
     }
 }
 

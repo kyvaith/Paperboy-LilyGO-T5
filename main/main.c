@@ -15,6 +15,7 @@
 #include "sdmmc_cmd.h"
 #include "msg/msg.h"
 #include "gbemu.h"
+#include "audio.h"
 #include "background.h"
 #include "touch.h"
 #include "ui.h"

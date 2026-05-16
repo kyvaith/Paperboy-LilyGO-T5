@@ -11,7 +11,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-
+#include <esp_attr.h>
 #include "minigb_apu.h"
 
 #define DMG_CLOCK_FREQ_U	((unsigned)DMG_CLOCK_FREQ)
@@ -33,14 +33,14 @@
 
 #define MAX_CHAN_VOLUME		15
 
-static void set_note_freq(struct chan *c)
+static IRAM_ATTR void set_note_freq(struct chan *c)
 {
 	/* Lowest expected value of freq is 64. */
 	uint32_t freq = (DMG_CLOCK_FREQ_U / 4) / (2048 - c->freq);
 	c->freq_inc = freq * (uint32_t)(FREQ_INC_REF / AUDIO_SAMPLE_RATE);
 }
 
-static void chan_enable(struct minigb_apu_ctx *ctx,
+static IRAM_ATTR void chan_enable(struct minigb_apu_ctx *ctx,
 		const uint_fast8_t i, const bool enable)
 {
 	uint8_t val;
@@ -53,7 +53,7 @@ static void chan_enable(struct minigb_apu_ctx *ctx,
 	ctx->audio_mem[0xFF26 - AUDIO_ADDR_COMPENSATION] = val;
 }
 
-static void update_env(struct chan *c)
+static IRAM_ATTR void update_env(struct chan *c)
 {
 	c->env.counter += c->env.inc;
 
@@ -69,7 +69,7 @@ static void update_env(struct chan *c)
 	}
 }
 
-static void update_len(struct minigb_apu_ctx *ctx, struct chan *c)
+static IRAM_ATTR void update_len(struct minigb_apu_ctx *ctx, struct chan *c)
 {
 	if (!c->len.enabled)
 		return;
@@ -81,7 +81,7 @@ static void update_len(struct minigb_apu_ctx *ctx, struct chan *c)
 	}
 }
 
-static bool update_freq(struct chan *c, uint32_t *pos)
+static IRAM_ATTR bool update_freq(struct chan *c, uint32_t *pos)
 {
 	uint32_t inc = c->freq_inc - *pos;
 	c->freq_counter += inc;
@@ -96,7 +96,7 @@ static bool update_freq(struct chan *c, uint32_t *pos)
 	}
 }
 
-static void update_sweep(struct chan *c)
+static IRAM_ATTR void update_sweep(struct chan *c)
 {
 	c->sweep.counter += c->sweep.inc;
 
@@ -120,7 +120,7 @@ static void update_sweep(struct chan *c)
 	}
 }
 
-static void update_square(struct minigb_apu_ctx *ctx, audio_sample_t *samples,
+static IRAM_ATTR void update_square(struct minigb_apu_ctx *ctx, audio_sample_t *samples,
 		const bool ch2)
 {
 	struct chan *c = &ctx->chans[ch2];
@@ -164,7 +164,7 @@ static void update_square(struct minigb_apu_ctx *ctx, audio_sample_t *samples,
 	}
 }
 
-static uint8_t wave_sample(struct minigb_apu_ctx *ctx,
+static IRAM_ATTR uint8_t wave_sample(struct minigb_apu_ctx *ctx,
 		const unsigned int pos, const unsigned int volume)
 {
 	uint8_t sample;
@@ -178,7 +178,7 @@ static uint8_t wave_sample(struct minigb_apu_ctx *ctx,
 	return volume ? (sample >> (volume - 1)) : 0;
 }
 
-static void update_wave(struct minigb_apu_ctx *ctx, audio_sample_t *samples)
+static IRAM_ATTR void update_wave(struct minigb_apu_ctx *ctx, audio_sample_t *samples)
 {
 	struct chan *c = &ctx->chans[2];
 
@@ -222,7 +222,7 @@ static void update_wave(struct minigb_apu_ctx *ctx, audio_sample_t *samples)
 	}
 }
 
-static void update_noise(struct minigb_apu_ctx *ctx, audio_sample_t *samples)
+static IRAM_ATTR void update_noise(struct minigb_apu_ctx *ctx, audio_sample_t *samples)
 {
 	struct chan *c = &ctx->chans[3];
 
@@ -287,7 +287,7 @@ static void update_noise(struct minigb_apu_ctx *ctx, audio_sample_t *samples)
 /**
  * SDL2 style audio callback function.
  */
-void minigb_apu_audio_callback(struct minigb_apu_ctx *ctx,
+void IRAM_ATTR minigb_apu_audio_callback(struct minigb_apu_ctx *ctx,
 		audio_sample_t *stream)
 {
 	memset(stream, 0, AUDIO_SAMPLES_TOTAL * sizeof(audio_sample_t));
@@ -297,7 +297,7 @@ void minigb_apu_audio_callback(struct minigb_apu_ctx *ctx,
 	update_noise(ctx, stream);
 }
 
-static void chan_trigger(struct minigb_apu_ctx *ctx, uint_fast8_t i)
+static IRAM_ATTR void chan_trigger(struct minigb_apu_ctx *ctx, uint_fast8_t i)
 {
 	struct chan *c = &ctx->chans[i];
 
@@ -368,7 +368,7 @@ static void chan_trigger(struct minigb_apu_ctx *ctx, uint_fast8_t i)
  *				This is not checked in this function.
  * \return	Byte at address.
  */
-uint8_t minigb_apu_audio_read(struct minigb_apu_ctx *ctx, const uint16_t addr)
+uint8_t IRAM_ATTR minigb_apu_audio_read(struct minigb_apu_ctx *ctx, const uint16_t addr)
 {
 	static const uint8_t ortab[] = {
 		0x80, 0x3f, 0x00, 0xff, 0xbf,
@@ -391,7 +391,7 @@ uint8_t minigb_apu_audio_read(struct minigb_apu_ctx *ctx, const uint16_t addr)
  *				This is not checked in this function.
  * \param val	Byte to write at address.
  */
-void minigb_apu_audio_write(struct minigb_apu_ctx *ctx,
+void IRAM_ATTR minigb_apu_audio_write(struct minigb_apu_ctx *ctx,
 		const uint16_t addr, const uint8_t val)
 {
 	/* Find sound channel corresponding to register address. */

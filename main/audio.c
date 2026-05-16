@@ -27,7 +27,7 @@
 #include <stdatomic.h>
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "driver/i2s_pdm.h"
 #include "driver/i2s_common.h"
@@ -36,7 +36,9 @@
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "rom/ets_sys.h"
 
+#include "paperboy_config.h"
 #include "minigb_apu/minigb_apu.h"
 #include "profiler.h"
 
@@ -53,15 +55,15 @@ static struct minigb_apu_ctx DRAM_ATTR s_apu;
  * Kept at module scope (DRAM) to avoid bloating the audio task's stack.
  * Size is AUDIO_SAMPLES_TOTAL ≈ 1100; use a fixed compile-time constant.
  */
-#define APU_BUF_SIZE  1100u   /* ≥ AUDIO_SAMPLES_TOTAL at 32768 Hz / 59.73 Hz */
+#define APU_BUF_SIZE  (AUDIO_SAMPLES * 2)
 static int16_t DRAM_ATTR s_apu_buf[APU_BUF_SIZE];
 
 /* -----------------------------------------------------------------------
  * Configuration
  * --------------------------------------------------------------------- */
 
-/* Buzzer GPIO, configurable via menuconfig (default GPIO 45 on M5PaperS3). */
-#define BUZZER_GPIO     21
+/* Buzzer GPIO, configurable via menuconfig. */
+#define BUZZER_GPIO     PAPERBOY_BUZZER_GPIO
 
 /*
  * Ring buffer holds CONFIG_PAPERBOY_AUDIO_RING_FRAMES GB frames of mono
@@ -70,7 +72,7 @@ static int16_t DRAM_ATTR s_apu_buf[APU_BUF_SIZE];
  *
  * AUDIO_SAMPLES ≈ 548.  6 frames ≈ 3288 samples; round up to 4096.
  */
-#define RING_SIZE_FRAMES    CONFIG_PAPERBOY_AUDIO_RING_FRAMES
+#define RING_SIZE_FRAMES    PAPERBOY_AUDIO_RING_FRAMES
 #define RING_SIZE_RAW       (RING_SIZE_FRAMES * AUDIO_SAMPLES)
 
 /* Next power-of-two ≥ RING_SIZE_RAW, evaluated at compile time. */
@@ -92,9 +94,8 @@ static inline uint32_t next_pow2(uint32_t v)
  */
 #define DMA_CHUNK   512u
 
-/* Audio output task */
-#define AUDIO_TASK_STACK    4096
-#define AUDIO_TASK_PRIORITY (configMAX_PRIORITIES - 2)
+#define AUDIO_TARGET_SAMPLES_PER_FRAME  PAPERBOY_AUDIO_TARGET_SAMPLES_PER_FRAME
+#define AUDIO_BUDGET_US                ((int64_t)PAPERBOY_AUDIO_BUDGET_MS * 1000)
 
 /* -----------------------------------------------------------------------
  * Ring buffer  (single-producer, single-consumer, lock-free)
@@ -123,96 +124,66 @@ static inline uint32_t ring_free_count(void)
 }
 
 /* -----------------------------------------------------------------------
- * I2S / task state
+ * I2S / state
  * --------------------------------------------------------------------- */
 
 static i2s_chan_handle_t s_tx_chan  = NULL;
-static TaskHandle_t      s_task    = NULL;
-static volatile bool     s_running = false;
+static bool              s_initialised = false;
+static uint32_t          s_pending_target_samples = 0;
+
+/* DMA write scratch buffer: static so it doesn't consume stack. */
+static int16_t DRAM_ATTR s_dma_buf[DMA_CHUNK];
 
 /* -----------------------------------------------------------------------
- * Audio output task
+ * Internal helpers
  * --------------------------------------------------------------------- */
 
-static void audio_task(void *arg)
+static void audio_generate_chunk_locked(void)
 {
-    (void)arg;
+    minigb_apu_audio_callback(&s_apu, s_apu_buf);
 
-    /* DMA write buffer: static so it doesn't consume task stack. */
-    static int16_t dma_buf[DMA_CHUNK];
+    uint32_t head = atomic_load_explicit(&s_ring_head, memory_order_relaxed);
+    for (uint32_t i = 0; i < AUDIO_SAMPLES; i++) {
+        int32_t mono = ((int32_t)s_apu_buf[i * 2] +
+                        (int32_t)s_apu_buf[i * 2 + 1]) >> 1;
+        s_ring[(head + i) & RING_MASK] = (int16_t)mono;
+    }
+    atomic_store_explicit(&s_ring_head, head + AUDIO_SAMPLES,
+                          memory_order_release);
+}
 
-    while (s_running) {
-        int64_t t_audio_start = esp_timer_get_time();
-
-        /*
-         * Step 1 — APU synthesis.
-         *
-         * Call the APU callback whenever there is room for at least one full
-         * frame of mono samples.  This clocks the APU at the I2S hardware
-         * rate (≈59.7 calls/sec in steady state) rather than at the variable
-         * emulation frame rate, eliminating sample-rate-mismatch stutter.
-         *
-         * minigb_apu_audio_callback() always produces exactly AUDIO_SAMPLES
-         * stereo pairs (≈548 at 32768 Hz / 59.73 Hz).  We down-mix to mono
-         * and push only AUDIO_SAMPLES values into the ring.
-         */
-        if (ring_free_count() >= AUDIO_SAMPLES) {
-            minigb_apu_audio_callback(&s_apu, s_apu_buf);
-
-            uint32_t head = atomic_load_explicit(&s_ring_head, memory_order_relaxed);
-            for (uint32_t i = 0; i < AUDIO_SAMPLES; i++) {
-                int32_t mono = ((int32_t)s_apu_buf[i * 2] +
-                                (int32_t)s_apu_buf[i * 2 + 1]) >> 1;
-                s_ring[(head + i) & RING_MASK] = (int16_t)mono;
-            }
-            atomic_store_explicit(&s_ring_head, head + AUDIO_SAMPLES,
-                                  memory_order_release);
-        }
-
-        /*
-         * Step 2 — Drain ring into DMA write buffer.
-         * Pad with silence if the ring doesn't have a full chunk yet
-         * (can happen briefly at startup or after a long underrun).
-         */
+static void audio_pump_i2s_nonblocking(void)
+{
+    while (true) {
         uint32_t avail = ring_count();
-        uint32_t n     = (avail < DMA_CHUNK) ? avail : DMA_CHUNK;
-
-        if (n > 0) {
-            uint32_t tail = atomic_load_explicit(&s_ring_tail, memory_order_relaxed);
-            for (uint32_t i = 0; i < n; i++) {
-                dma_buf[i] = s_ring[(tail + i) & RING_MASK];
-            }
-            atomic_store_explicit(&s_ring_tail, tail + n, memory_order_release);
+        uint32_t n = (avail < DMA_CHUNK) ? avail : DMA_CHUNK;
+        if (n == 0) {
+            return;
         }
 
-        /* Synthesis + ring-fill is now complete — record CPU-busy time before
-         * blocking on i2s_channel_write() (the emulator runs during that wait). */
-        profiler_audio_add(esp_timer_get_time() - t_audio_start);
-
-        if (n < DMA_CHUNK) {
-            memset(&dma_buf[n], 0, (DMA_CHUNK - n) * sizeof(int16_t));
-            if (n == 0) {
-                static uint32_t s_underrun_count = 0;
-                if ((++s_underrun_count & 0x3F) == 0) {
-                    ESP_LOGD(TAG, "audio underrun #%lu",
-                             (unsigned long)s_underrun_count);
-                }
-            }
+        uint32_t tail = atomic_load_explicit(&s_ring_tail, memory_order_relaxed);
+        for (uint32_t i = 0; i < n; i++) {
+            s_dma_buf[i] = s_ring[(tail + i) & RING_MASK];
         }
 
-        /* Step 3 — Write to I2S DMA (blocks until buffer slot accepted). */
         size_t written = 0;
         esp_err_t err = i2s_channel_write(s_tx_chan,
-                                          dma_buf,
-                                          DMA_CHUNK * sizeof(int16_t),
+                                          s_dma_buf,
+                                          n * sizeof(int16_t),
                                           &written,
-                                          portMAX_DELAY);
+                                          0);
+        if (err == ESP_ERR_TIMEOUT || written == 0) {
+            return;
+        }
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "i2s_channel_write: %s", esp_err_to_name(err));
+            return;
         }
-    }
 
-    vTaskDelete(NULL);
+        atomic_store_explicit(&s_ring_tail,
+                              tail + (uint32_t)(written / sizeof(int16_t)),
+                              memory_order_release);
+    }
 }
 
 /* -----------------------------------------------------------------------
@@ -221,7 +192,10 @@ static void audio_task(void *arg)
 
 void audio_init(void)
 {
-    if (s_running) {
+    if (s_initialised) {
+        atomic_store_explicit(&s_ring_head, 0, memory_order_relaxed);
+        atomic_store_explicit(&s_ring_tail, 0, memory_order_relaxed);
+        s_pending_target_samples = 0;
         minigb_apu_audio_init(&s_apu);
         return;
     }
@@ -256,26 +230,46 @@ void audio_init(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
 
     /* --- APU ---------------------------------------------------------- */
+    atomic_store_explicit(&s_ring_head, 0, memory_order_relaxed);
+    atomic_store_explicit(&s_ring_tail, 0, memory_order_relaxed);
+    s_pending_target_samples = 0;
     minigb_apu_audio_init(&s_apu);
 
     ESP_LOGI(TAG, "I2S PDM TX started: GPIO%d, %u Hz, ring=%u samples (~%u ms)",
              BUZZER_GPIO, AUDIO_SAMPLE_RATE, RING_SIZE,
              (unsigned)(RING_SIZE * 1000u / AUDIO_SAMPLE_RATE));
 
-    /* --- Output task -------------------------------------------------- */
-    s_running = true;
-    BaseType_t rc = xTaskCreatePinnedToCore(audio_task,
-                                            "audio_out",
-                                            AUDIO_TASK_STACK,
-                                            NULL,
-                                            AUDIO_TASK_PRIORITY,
-                                            &s_task,
-                                            0 /* PRO_CPU – same core as emulator,
-                                               * but blocks in i2s_channel_write()
-                                               * for ~15.6 ms between ~2 µs bursts,
-                                               * so CPU overhead is < 0.01%. */);
-    if (rc != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create audio task");
+    s_initialised = true;
+}
+
+void audio_service_frame(void)
+{
+    if (!s_initialised) {
+        return;
+    }
+
+    int64_t start_us = esp_timer_get_time();
+
+    s_pending_target_samples += AUDIO_TARGET_SAMPLES_PER_FRAME;
+
+    while (s_pending_target_samples >= AUDIO_SAMPLES &&
+           ring_free_count() >= AUDIO_SAMPLES) {
+        if (AUDIO_BUDGET_US > 0 && (esp_timer_get_time() - start_us) >= AUDIO_BUDGET_US) {
+            break;
+        }
+
+        audio_generate_chunk_locked();
+        s_pending_target_samples -= AUDIO_SAMPLES;
+    }
+
+    audio_pump_i2s_nonblocking();
+    profiler_audio_add(esp_timer_get_time() - start_us);
+
+    if (AUDIO_BUDGET_US > 0) {
+        int64_t elapsed_us = esp_timer_get_time() - start_us;
+        if (elapsed_us < AUDIO_BUDGET_US) {
+            ets_delay_us((uint32_t)(AUDIO_BUDGET_US - elapsed_us));
+        }
     }
 }
 
@@ -321,7 +315,7 @@ void audio_apu_write(uint16_t addr, uint8_t val)
 
 void audio_deinit(void)
 {
-    s_running = false;
+    s_initialised = false;
 
     if (s_tx_chan) {
         i2s_channel_disable(s_tx_chan);
@@ -329,7 +323,4 @@ void audio_deinit(void)
         s_tx_chan = NULL;
     }
 
-    /* The task deletes itself once s_running is false; give it a moment. */
-    vTaskDelay(pdMS_TO_TICKS(50));
-    s_task = NULL;
 }
