@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
 #include <esp_timer.h>
 #include "driver/spi_common.h"
@@ -25,6 +26,11 @@ static const char *TAG = "paperboy";
 static sdmmc_card_t *s_sd_card;
 static uint8_t *s_rom_data;
 static size_t s_rom_size;
+static char s_rom_path[256];
+
+#define PAPERBOY_PERSIST_EXTENSION ".sav"
+#define PAPERBOY_STATE_EXTENSION ".state"
+#define PAPERBOY_LAST_STATE_FILE SD_MOUNT_POINT "/paperboy-last-state.txt"
 
 #define PAPERBOY_GB_ROM_MAX_SIZE (4 * 1024 * 1024)
 #define SD_MOUNT_POINT "/sdcard"
@@ -128,6 +134,10 @@ static bool load_gb_rom_from_file(const char *path)
     }
 
     rewind(f);
+    free(s_rom_data);
+    s_rom_data = NULL;
+    s_rom_size = 0;
+
     /* Prefer internal DRAM: 1–3 cycle access vs PSRAM cache-miss (~20–40 cy).
      * Falls back to PSRAM when the ROM is too large for available SRAM. */
     s_rom_data = (uint8_t *)heap_caps_malloc(file_len,
@@ -154,8 +164,416 @@ static bool load_gb_rom_from_file(const char *path)
     }
 
     s_rom_size = (size_t)file_len;
+    strlcpy(s_rom_path, path, sizeof(s_rom_path));
     ESP_LOGI(TAG, "Loaded ROM from SD: %s (%u bytes)", path, (unsigned)s_rom_size);
     return true;
+}
+
+static bool build_save_path(const char *rom_path, char *save_path, size_t save_path_size)
+{
+    const char *extension = PAPERBOY_PERSIST_EXTENSION;
+    const char *slash;
+    const char *dot;
+    size_t base_len;
+
+    if (rom_path == NULL || rom_path[0] == '\0' || save_path == NULL || save_path_size == 0) {
+        return false;
+    }
+
+    slash = strrchr(rom_path, '/');
+    dot = strrchr(rom_path, '.');
+    if (dot == NULL || (slash != NULL && dot < slash)) {
+        dot = rom_path + strlen(rom_path);
+    }
+
+    base_len = (size_t)(dot - rom_path);
+    if (base_len + strlen(extension) + 1 > save_path_size) {
+        return false;
+    }
+
+    memcpy(save_path, rom_path, base_len);
+    memcpy(save_path + base_len, extension, strlen(extension) + 1);
+    return true;
+}
+
+static bool build_state_path(const char *rom_path, char *state_path, size_t state_path_size)
+{
+    const char *extension = PAPERBOY_STATE_EXTENSION;
+    const char *slash;
+    const char *dot;
+    size_t base_len;
+
+    if (rom_path == NULL || rom_path[0] == '\0' || state_path == NULL || state_path_size == 0) {
+        return false;
+    }
+
+    slash = strrchr(rom_path, '/');
+    dot = strrchr(rom_path, '.');
+    if (dot == NULL || (slash != NULL && dot < slash)) {
+        dot = rom_path + strlen(rom_path);
+    }
+
+    base_len = (size_t)(dot - rom_path);
+    if (base_len + strlen(extension) + 1 > state_path_size) {
+        return false;
+    }
+
+    memcpy(state_path, rom_path, base_len);
+    memcpy(state_path + base_len, extension, strlen(extension) + 1);
+    return true;
+}
+
+static bool write_last_state_path(const char *rom_path)
+{
+    FILE *path_file;
+
+    if (rom_path == NULL || rom_path[0] == '\0') {
+        return false;
+    }
+
+    path_file = fopen(PAPERBOY_LAST_STATE_FILE, "wb");
+    if (path_file == NULL) {
+        ESP_LOGE(TAG, "Failed to open last-state file: %s", PAPERBOY_LAST_STATE_FILE);
+        return false;
+    }
+
+    if (fprintf(path_file, "%s\n", rom_path) < 0) {
+        fclose(path_file);
+        ESP_LOGE(TAG, "Failed to write last-state path: %s", PAPERBOY_LAST_STATE_FILE);
+        return false;
+    }
+
+    if (fclose(path_file) != 0) {
+        ESP_LOGE(TAG, "Failed to close last-state file: %s", PAPERBOY_LAST_STATE_FILE);
+        return false;
+    }
+
+    return true;
+}
+
+static bool read_last_state_path(char *rom_path, size_t rom_path_size)
+{
+    FILE *path_file;
+
+    if (rom_path == NULL || rom_path_size == 0) {
+        return false;
+    }
+
+    path_file = fopen(PAPERBOY_LAST_STATE_FILE, "rb");
+    if (path_file == NULL) {
+        ESP_LOGI(TAG, "No last-state file present: %s", PAPERBOY_LAST_STATE_FILE);
+        return false;
+    }
+
+    if (fgets(rom_path, (int)rom_path_size, path_file) == NULL) {
+        fclose(path_file);
+        ESP_LOGE(TAG, "Failed to read last-state path");
+        return false;
+    }
+
+    fclose(path_file);
+    rom_path[strcspn(rom_path, "\r\n")] = '\0';
+    return rom_path[0] != '\0';
+}
+
+static bool save_game_persist(const char *rom_path)
+{
+    bool ok = false;
+    char save_path[256];
+    uint8_t *persist_data = NULL;
+    size_t persist_size;
+    FILE *save_file = NULL;
+    size_t written;
+    uint32_t timestamp;
+
+    if (!paperboy_gb_has_persist()) {
+        ESP_LOGW(TAG, "Save requested, but current ROM has no persistent storage");
+        return false;
+    }
+
+    if (!build_save_path(rom_path, save_path, sizeof(save_path))) {
+        ESP_LOGE(TAG, "Failed to build save path for ROM: %s", rom_path ? rom_path : "<null>");
+        return false;
+    }
+
+    persist_size = paperboy_gb_persist_size();
+    if (persist_size == 0) {
+        ESP_LOGW(TAG, "Save requested, but persist payload is empty");
+        return false;
+    }
+
+    persist_data = (uint8_t *)heap_caps_malloc(persist_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (persist_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate %u-byte save buffer in SPIRAM", (unsigned)persist_size);
+        return false;
+    }
+
+    timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    if (!paperboy_gb_persist_export(persist_data, persist_size, timestamp)) {
+        ESP_LOGE(TAG, "Persist export failed: %s", paperboy_gb_last_error());
+        goto out;
+    }
+
+    save_file = fopen(save_path, "wb");
+    if (save_file == NULL) {
+        ESP_LOGE(TAG, "Failed to open save file: %s", save_path);
+        goto out;
+    }
+
+    written = fwrite(persist_data, 1, persist_size, save_file);
+    if (written != persist_size) {
+        ESP_LOGE(TAG, "Short save write: %u/%u", (unsigned)written, (unsigned)persist_size);
+        goto out;
+    }
+
+    if (fclose(save_file) != 0) {
+        save_file = NULL;
+        ESP_LOGE(TAG, "Failed to close save file: %s", save_path);
+        goto out;
+    }
+    save_file = NULL;
+
+    paperboy_gb_persist_mark_clean();
+    ESP_LOGI(TAG, "Saved persist data to %s (%u bytes)", save_path, (unsigned)persist_size);
+    ok = true;
+
+out:
+    if (save_file != NULL) {
+        fclose(save_file);
+    }
+    heap_caps_free(persist_data);
+    return ok;
+}
+
+static bool load_game_persist(const char *rom_path)
+{
+    bool ok = false;
+    char save_path[256];
+    uint8_t *persist_data = NULL;
+    FILE *save_file = NULL;
+    long file_len;
+    size_t read_len;
+    uint32_t timestamp;
+
+    if (!paperboy_gb_has_persist()) {
+        return false;
+    }
+
+    if (!build_save_path(rom_path, save_path, sizeof(save_path))) {
+        ESP_LOGW(TAG, "Skipping persist load: invalid ROM path");
+        return false;
+    }
+
+    save_file = fopen(save_path, "rb");
+    if (save_file == NULL) {
+        ESP_LOGI(TAG, "No save file present for ROM: %s", save_path);
+        return false;
+    }
+
+    if (fseek(save_file, 0, SEEK_END) != 0) {
+        ESP_LOGE(TAG, "Failed to seek save file: %s", save_path);
+        goto out;
+    }
+
+    file_len = ftell(save_file);
+    if (file_len <= 0) {
+        ESP_LOGE(TAG, "Invalid save file size: %ld", file_len);
+        goto out;
+    }
+
+    if ((size_t)file_len != paperboy_gb_persist_size()) {
+        ESP_LOGW(TAG, "Save file size mismatch for %s: %ld != %u",
+                 save_path,
+                 file_len,
+                 (unsigned)paperboy_gb_persist_size());
+        goto out;
+    }
+
+    rewind(save_file);
+
+    persist_data = (uint8_t *)heap_caps_malloc((size_t)file_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (persist_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate %ld-byte load buffer in SPIRAM", file_len);
+        goto out;
+    }
+
+    read_len = fread(persist_data, 1, (size_t)file_len, save_file);
+    if (read_len != (size_t)file_len) {
+        ESP_LOGE(TAG, "Short save read: %u/%ld", (unsigned)read_len, file_len);
+        goto out;
+    }
+
+    timestamp = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    if (!paperboy_gb_persist_import(persist_data, (size_t)file_len, timestamp)) {
+        ESP_LOGE(TAG, "Persist import failed: %s", paperboy_gb_last_error());
+        goto out;
+    }
+
+    ESP_LOGI(TAG, "Loaded persist data from %s", save_path);
+    ok = true;
+
+out:
+    if (save_file != NULL) {
+        fclose(save_file);
+    }
+    heap_caps_free(persist_data);
+    return ok;
+}
+
+static bool save_game_state(const char *rom_path)
+{
+    bool ok = false;
+    char state_path[256];
+    uint8_t *state_data = NULL;
+    size_t state_size;
+    FILE *state_file = NULL;
+    size_t written;
+
+    if (!build_state_path(rom_path, state_path, sizeof(state_path))) {
+        ESP_LOGE(TAG, "Failed to build state path for ROM: %s", rom_path ? rom_path : "<null>");
+        return false;
+    }
+
+    state_size = paperboy_gb_state_size();
+    if (state_size == 0) {
+        ESP_LOGE(TAG, "Failed to determine snapshot size");
+        return false;
+    }
+
+    state_data = (uint8_t *)heap_caps_malloc(state_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (state_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate %u-byte state buffer in SPIRAM", (unsigned)state_size);
+        return false;
+    }
+
+    if (!paperboy_gb_state_export(state_data, state_size)) {
+        ESP_LOGE(TAG, "State export failed: %s", paperboy_gb_last_error());
+        goto out;
+    }
+
+    state_file = fopen(state_path, "wb");
+    if (state_file == NULL) {
+        ESP_LOGE(TAG, "Failed to open state file: %s", state_path);
+        goto out;
+    }
+
+    written = fwrite(state_data, 1, state_size, state_file);
+    if (written != state_size) {
+        ESP_LOGE(TAG, "Short state write: %u/%u", (unsigned)written, (unsigned)state_size);
+        goto out;
+    }
+
+    if (fclose(state_file) != 0) {
+        state_file = NULL;
+        ESP_LOGE(TAG, "Failed to close state file: %s", state_path);
+        goto out;
+    }
+    state_file = NULL;
+
+    if (!write_last_state_path(rom_path)) {
+        goto out;
+    }
+
+    ESP_LOGI(TAG, "Saved snapshot to %s (%u bytes)", state_path, (unsigned)state_size);
+    ok = true;
+
+out:
+    if (state_file != NULL) {
+        fclose(state_file);
+    }
+    heap_caps_free(state_data);
+    return ok;
+}
+
+static bool load_game_state(const char *rom_path)
+{
+    bool ok = false;
+    char state_path[256];
+    uint8_t *state_data = NULL;
+    FILE *state_file = NULL;
+    long file_len;
+    size_t read_len;
+
+    if (!build_state_path(rom_path, state_path, sizeof(state_path))) {
+        ESP_LOGW(TAG, "Skipping snapshot load: invalid ROM path");
+        return false;
+    }
+
+    state_file = fopen(state_path, "rb");
+    if (state_file == NULL) {
+        ESP_LOGI(TAG, "No snapshot present for ROM: %s", state_path);
+        return false;
+    }
+
+    if (fseek(state_file, 0, SEEK_END) != 0) {
+        ESP_LOGE(TAG, "Failed to seek state file: %s", state_path);
+        goto out;
+    }
+
+    file_len = ftell(state_file);
+    if (file_len <= 0) {
+        ESP_LOGE(TAG, "Invalid state file size: %ld", file_len);
+        goto out;
+    }
+
+    rewind(state_file);
+
+    state_data = (uint8_t *)heap_caps_malloc((size_t)file_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (state_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate %ld-byte state buffer in SPIRAM", file_len);
+        goto out;
+    }
+
+    read_len = fread(state_data, 1, (size_t)file_len, state_file);
+    if (read_len != (size_t)file_len) {
+        ESP_LOGE(TAG, "Short state read: %u/%ld", (unsigned)read_len, file_len);
+        goto out;
+    }
+
+    if (!paperboy_gb_state_import(state_data, (size_t)file_len)) {
+        ESP_LOGE(TAG, "State import failed: %s", paperboy_gb_last_error());
+        goto out;
+    }
+
+    ESP_LOGI(TAG, "Loaded snapshot from %s", state_path);
+    ok = true;
+
+out:
+    if (state_file != NULL) {
+        fclose(state_file);
+    }
+    heap_caps_free(state_data);
+    return ok;
+}
+
+static bool save_game_session(const char *rom_path)
+{
+    bool persist_ok = true;
+
+    if (paperboy_gb_has_persist()) {
+        persist_ok = save_game_persist(rom_path);
+    }
+
+    if (!persist_ok) {
+        return false;
+    }
+
+    return save_game_state(rom_path);
+}
+
+static bool load_game_session(const char *rom_path, bool include_snapshot)
+{
+    bool state_loaded = true;
+
+    if (paperboy_gb_has_persist()) {
+        load_game_persist(rom_path);
+    }
+
+    if (include_snapshot) {
+        state_loaded = load_game_state(rom_path);
+    }
+
+    return state_loaded;
 }
 
 /* ui_put_pixel / ui_put_rect are now defined in ui.c (see ui.h). */
@@ -164,6 +582,8 @@ void app_main(void)
 {
     esp_err_t sd_err;
     bool gb_ok;
+    bool load_snapshot = false;
+    uint8_t prev_actions = 0;
     const uint8_t *rom_data = NULL;
     size_t rom_size = 0;
 
@@ -196,22 +616,71 @@ void app_main(void)
 
     sd_err = sdcard_mount();
     if (sd_err == ESP_OK) {
-        char rom_path[256];
-        if (ui_rom_picker(SD_MOUNT_POINT, rom_path, sizeof(rom_path))) {
-            if (load_gb_rom_from_file(rom_path)) {
-                rom_data = s_rom_data;
-                rom_size = s_rom_size;
+        char rom_path[256] = {0};
+
+        while (1) {
+            const ui_rom_pick_result_t pick = ui_rom_picker(SD_MOUNT_POINT, rom_path, sizeof(rom_path));
+
+            if (pick == UI_ROM_PICK_NONE) {
+                break;
             }
+
+            if (pick == UI_ROM_PICK_LOAD_LAST) {
+                if (!read_last_state_path(rom_path, sizeof(rom_path))) {
+                    ui_show_notice("LOAD", "No snapshot", 750);
+                    continue;
+                }
+                load_snapshot = true;
+            } else {
+                load_snapshot = false;
+            }
+
+            ui_show_notice("LOAD", "Loading", 0);
+
+            if (!load_gb_rom_from_file(rom_path)) {
+                if (load_snapshot) {
+                    ui_show_notice("LOAD", "ROM missing", 750);
+                    continue;
+                }
+                continue;
+            }
+
+            rom_data = s_rom_data;
+            rom_size = s_rom_size;
+
+            gb_ok = paperboy_gb_init(rom_data, rom_size);
+            if (!gb_ok) {
+                ESP_LOGW(TAG, "Peanut-GB init skipped: %s", paperboy_gb_last_error());
+                rom_data = NULL;
+                rom_size = 0;
+                continue;
+            }
+
+            if (load_snapshot && !load_game_session(s_rom_path, true)) {
+                ui_show_notice("LOAD", "No snapshot", 750);
+                rom_data = NULL;
+                rom_size = 0;
+                continue;
+            }
+
+            if (!load_snapshot) {
+                load_game_session(s_rom_path, false);
+            }
+
+            paperboy_gb_set_buttons(0);
+            break;
         }
     } else {
         ESP_LOGW(TAG, "SD init skipped, falling back to built-in stub ROM");
     }
 
-    gb_ok = paperboy_gb_init(rom_data, rom_size);
-    if (!gb_ok) {
-        ESP_LOGW(TAG, "Peanut-GB init skipped: %s", paperboy_gb_last_error());
-    } else {
-        paperboy_gb_set_buttons(0);
+    if (rom_data == NULL) {
+        gb_ok = paperboy_gb_init(rom_data, rom_size);
+        if (!gb_ok) {
+            ESP_LOGW(TAG, "Peanut-GB init skipped: %s", paperboy_gb_last_error());
+        } else {
+            paperboy_gb_set_buttons(0);
+        }
     }
 
     ESP_LOGI(TAG, "Entering GB render loop");
@@ -227,6 +696,9 @@ void app_main(void)
     uint32_t vsync_ref = msg_get_vsync_count();
 
     while (1) {
+        tp_state_t touch_state;
+        uint8_t action_edges;
+
         if (!gb_ok) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
@@ -234,8 +706,34 @@ void app_main(void)
 
         /* Poll touchscreen and update GB button state every emulated frame. */
         PROF_BEGIN(PROF_TOUCH);
-        paperboy_gb_set_buttons(tp_read_buttons());
+        touch_state = tp_read_state();
+        paperboy_gb_set_buttons(touch_state.gb_buttons);
         PROF_END(PROF_TOUCH);
+
+        action_edges = touch_state.actions & (uint8_t)~prev_actions;
+        prev_actions = touch_state.actions;
+
+        if (action_edges & TP_ACTION_SAVE) {
+            paperboy_gb_set_buttons(0);
+            if (save_game_session(s_rom_path)) {
+                ui_show_notice("SAVE", "Saved", 500);
+            }
+            video_fb = msg_flip();
+            vsync_ref = msg_get_vsync_count();
+            skip_count = 0;
+            continue;
+        }
+
+        if (action_edges & TP_ACTION_LOAD) {
+            paperboy_gb_set_buttons(0);
+            if (load_game_state(s_rom_path)) {
+                ui_show_notice("LOAD", "Loaded", 500);
+            }
+            video_fb = msg_flip();
+            vsync_ref = msg_get_vsync_count();
+            skip_count = 0;
+            continue;
+        }
 
         bool skip_render = (skip_count > 0);
 

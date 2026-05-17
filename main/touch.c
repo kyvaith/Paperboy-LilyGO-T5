@@ -100,6 +100,20 @@ static const uint8_t s_btn_masks[] = {
 
 #define NUM_BUTTONS  (sizeof(s_btn_zones) / sizeof(s_btn_zones[0]))
 
+/* Save/load zones are intentionally left disabled until they are calibrated
+ * against the baked background image. */
+static const tp_btn_zone_t s_action_zones[] = {
+    /* TP_ACTION_LOAD */ { .r = { {14, 921, 112, 958}, {0, 0, 0, 0} } },
+    /* TP_ACTION_SAVE */ { .r = { {134, 921, 233, 958}, {0, 0, 0, 0} } },
+};
+
+static const uint8_t s_action_masks[] = {
+    TP_ACTION_LOAD,
+    TP_ACTION_SAVE,
+};
+
+#define NUM_ACTIONS  (sizeof(s_action_zones) / sizeof(s_action_zones[0]))
+
 /* ── Driver state ────────────────────────────────────────────────────────── */
 
 static i2c_master_bus_handle_t s_i2c_bus;
@@ -211,50 +225,50 @@ esp_err_t tp_init(void)
     return ESP_OK;
 }
 
-uint8_t tp_read_buttons(void)
+tp_state_t tp_read_state(void)
 {
+    tp_state_t state = {0};
+
     if (!s_inited) {
-        return 0;
+        return state;
     }
 
     /* Error cooldown: skip I2C entirely so the main loop can yield to the
      * IDLE task and keep the task WDT fed after a bus fault. */
     if (esp_timer_get_time() < s_skip_until_us) {
-        return 0;
+        return state;
     }
 
     /* INT is driven LOW by GT911 only when new touch data is pending.
      * With the pull-up in place, HIGH reliably means "no touch". */
     if (gpio_get_level(GT911_PIN_INT) != 0) {
-        return 0;
+        return state;
     }
 
     /* ── Read status register ─────────────────────────────────────────── */
     uint8_t status = 0;
     if (gt911_read_regs(GT911_REG_STATUS, &status, 1) != ESP_OK) {
         gt911_bus_error_recovery();
-        return 0;
+        return state;
     }
 
     /* bit[7]: buffer_status — 1 means new touch data is ready */
     if (!(status & 0x80)) {
         gt911_write_reg(GT911_REG_STATUS, 0);   /* clear stale flag */
-        return 0;
+        return state;
     }
 
     uint8_t n = status & 0x0F;
     if (n > 5) n = 5;   /* GT911 supports max 5 simultaneous touch points */
 
     /* ── Read touch point data ────────────────────────────────────────── */
-    uint8_t mask = 0;
-
     if (n > 0) {
         uint8_t pts[5 * 8] = {0};
         if (gt911_read_regs(GT911_REG_POINT1, pts, (size_t)n * 8) != ESP_OK) {
             /* Attempt status clear before recovering so GT911 releases INT */
             gt911_write_reg(GT911_REG_STATUS, 0);
             gt911_bus_error_recovery();
-            return 0;
+            return state;
         }
 
         for (uint8_t p = 0; p < n; p++) {
@@ -275,7 +289,21 @@ uint8_t tp_read_buttons(void)
                     }
                     if (raw_x >= r->x0 && raw_x <= r->x1 &&
                         raw_y >= r->y0 && raw_y <= r->y1) {
-                        mask |= s_btn_masks[b];
+                        state.gb_buttons |= s_btn_masks[b];
+                        break;  /* matched; no need to check the second rect */
+                    }
+                }
+            }
+
+            for (size_t a = 0; a < NUM_ACTIONS; a++) {
+                for (size_t ri = 0; ri < 2; ri++) {
+                    const tp_rect_t *r = &s_action_zones[a].r[ri];
+                    if (r->x0 == 0 && r->x1 == 0 && r->y0 == 0 && r->y1 == 0) {
+                        continue;
+                    }
+                    if (raw_x >= r->x0 && raw_x <= r->x1 &&
+                        raw_y >= r->y0 && raw_y <= r->y1) {
+                        state.actions |= s_action_masks[a];
                         break;  /* matched; no need to check the second rect */
                     }
                 }
@@ -288,5 +316,10 @@ uint8_t tp_read_buttons(void)
         gt911_bus_error_recovery();
     }
 
-    return mask;
+    return state;
+}
+
+uint8_t tp_read_buttons(void)
+{
+    return tp_read_state().gb_buttons;
 }

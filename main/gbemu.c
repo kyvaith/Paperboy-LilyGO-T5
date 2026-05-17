@@ -80,6 +80,13 @@ static bool gb_has_persist_data(void)
     return s_cart_ram_size > 0 || s_gb.cart_battery;
 }
 
+static void gb_invalidate_video_cache(void)
+{
+    for (size_t index = 0; index < sizeof(s_previous_lcd); index++) {
+        s_previous_lcd[index] = (uint8_t)~s_lcd[index];
+    }
+}
+
 static size_t gb_persist_rtc_size(void)
 {
     return s_gb.cart_battery ? sizeof(s_gb.cart_rtc) : 0u;
@@ -426,6 +433,54 @@ void paperboy_gb_persist_mark_clean(void)
 
     s_gb.direct.sram_updated = 0;
     s_gb.direct.sram_dirty = 0;
+}
+
+size_t paperboy_gb_state_size(void)
+{
+    if (!s_ready) {
+        return 0;
+    }
+
+    return gb_get_state_size(&s_gb);
+}
+
+bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size)
+{
+    const size_t state_size = paperboy_gb_state_size();
+
+    if (!s_ready || dst == NULL) {
+        set_last_error("state export unavailable");
+        return false;
+    }
+
+    if (dst_size < state_size) {
+        set_last_error("state export buffer too small");
+        return false;
+    }
+
+    gb_state_save(&s_gb, (char *)dst);
+    set_last_error("ok");
+    return true;
+}
+
+bool paperboy_gb_state_import(const uint8_t *src, size_t src_size)
+{
+    const char *result;
+
+    if (!s_ready || src == NULL) {
+        set_last_error("state import unavailable");
+        return false;
+    }
+
+    result = gb_state_load(&s_gb, (const char *)src, src_size);
+    if (result != NULL) {
+        set_last_error(result);
+        return false;
+    }
+
+    gb_invalidate_video_cache();
+    set_last_error("ok");
+    return true;
 }
 
 const uint8_t *paperboy_gb_get_framebuffer(void)

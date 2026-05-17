@@ -3,6 +3,14 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+#define TP_ACTION_LOAD 0x01
+#define TP_ACTION_SAVE 0x02
+
+typedef struct {
+	uint8_t gb_buttons;
+	uint8_t actions;
+} tp_state_t;
+
 /**
  * Initialise the GT911 capacitive touchscreen over I2C.
  *
@@ -17,6 +25,12 @@
  * always return 0.
  */
 esp_err_t tp_init(void);
+
+/**
+ * Sample the touchscreen and return both GameBoy button and Paperboy action
+ * state for the current touch frame.
+ */
+tp_state_t tp_read_state(void);
 
 /**
  * Sample the touchscreen and return a GameBoy button bitmask.

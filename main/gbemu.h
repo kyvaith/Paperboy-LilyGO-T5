@@ -28,6 +28,9 @@ bool paperboy_gb_persist_is_dirty(void);
 bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestamp);
 bool paperboy_gb_persist_import(const uint8_t *src, size_t src_size, uint32_t current_timestamp);
 void paperboy_gb_persist_mark_clean(void);
+size_t paperboy_gb_state_size(void);
+bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size);
+bool paperboy_gb_state_import(const uint8_t *src, size_t src_size);
 bool paperboy_gb_is_ready(void);
 const char *paperboy_gb_last_error(void);
 

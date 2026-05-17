@@ -33,4 +33,13 @@ void ui_put_rect(uint8_t *fb, int x0, int y0, int x1, int y1, int c);
  * Call msg_flip() after this returns to obtain a fresh back-buffer before
  * entering the main game render loop.
  */
-bool ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size);
+typedef enum {
+	UI_ROM_PICK_NONE = 0,
+	UI_ROM_PICK_SELECTED,
+	UI_ROM_PICK_LOAD_LAST,
+} ui_rom_pick_result_t;
+
+ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size);
+
+/* Show a transient full-screen menu-style notice for the requested duration. */
+void ui_show_notice(const char *title, const char *message, uint32_t duration_ms);

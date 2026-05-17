@@ -236,6 +236,17 @@ static void ui_menu_row(uint8_t *fb, int row,
 
 typedef char ui_path_t[UI_PATH_MAX];
 
+static bool has_rom_extension(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+
+    if (dot == NULL) {
+        return false;
+    }
+
+    return strcasecmp(dot, ".gb") == 0 || strcasecmp(dot, ".gbc") == 0;
+}
+
 static int scan_dir(const char *dir_path, ui_path_t *files,
                     int max, int count, int depth)
 {
@@ -266,6 +277,9 @@ static int scan_dir(const char *dir_path, ui_path_t *files,
             if (depth > 0)
                 count = scan_dir(full, files, max, count, depth - 1);
         } else {
+            if (!has_rom_extension(ent->d_name)) {
+                continue;
+            }
             strncpy(files[count], full, UI_PATH_MAX - 1);
             files[count][UI_PATH_MAX - 1] = '\0';
             count++;
@@ -285,22 +299,32 @@ static int scan_dir(const char *dir_path, ui_path_t *files,
 #define BTN_REPEAT_RATE_MS   150
 
 static uint8_t s_prev_btns;
+static uint8_t s_prev_actions;
 static uint8_t s_repeat_btn;
 static int64_t s_repeat_next_ms;
+
+typedef struct {
+    uint8_t buttons;
+    uint8_t actions;
+} ui_input_t;
 
 static void input_reset(void)
 {
     s_prev_btns      = 0;
+    s_prev_actions   = 0;
     s_repeat_btn     = 0;
     s_repeat_next_ms = 0;
 }
 
 /* Returns a bitmask of GB_BTN_* events that should be acted upon this frame.
  * Handles rising-edge detection and auto-repeat for UP/DOWN. */
-static uint8_t input_poll(void)
+static ui_input_t input_poll(void)
 {
-    uint8_t cur    = tp_read_buttons();
-    uint8_t edge   = cur & ~s_prev_btns;          /* rising edges */
+    tp_state_t touch = tp_read_state();
+    ui_input_t input = {0};
+    uint8_t cur      = touch.gb_buttons;
+    uint8_t edge     = cur & (uint8_t)~s_prev_btns;          /* rising edges */
+    uint8_t actions  = touch.actions & (uint8_t)~s_prev_actions;
     int64_t now_ms = (int64_t)(esp_timer_get_time() / 1000);
 
     /* Auto-repeat: arm on first contact, fire at REPEAT_RATE after DELAY. */
@@ -318,7 +342,10 @@ static uint8_t input_poll(void)
     }
 
     s_prev_btns = cur;
-    return edge;
+    input.buttons = edge;
+    input.actions = actions;
+    s_prev_actions = touch.actions;
+    return input;
 }
 
 /* ── Public: ROM / file picker ────────────────────────────────────────────
@@ -327,14 +354,14 @@ static uint8_t input_poll(void)
  * interactive selection loop.  Uses msg_flip() for display pacing.
  */
 
-bool ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size)
+ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size)
 {
     /* Allocate file list from SPIRAM to avoid stack pressure. */
     ui_path_t *files = (ui_path_t *)heap_caps_malloc(
                             UI_MAX_FILES * sizeof(ui_path_t), MALLOC_CAP_SPIRAM);
     if (!files) {
         ESP_LOGE(TAG, "Cannot allocate file list");
-        return false;
+        return UI_ROM_PICK_NONE;
     }
 
     int file_count = scan_dir(mount_pt, files, UI_MAX_FILES, 0, 1 /* depth */);
@@ -353,7 +380,7 @@ bool ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size)
         msg_flip();
         vTaskDelay(pdMS_TO_TICKS(3000));
         heap_caps_free(files);
-        return false;
+        return UI_ROM_PICK_NONE;
     }
 
     int selection  = 0;
@@ -420,9 +447,9 @@ bool ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size)
         video_fb = msg_flip();
 
         /* ── Input ──────────────────────────────────────────────── */
-        uint8_t ev = input_poll();
+        ui_input_t ev = input_poll();
 
-        if (ev & GB_BTN_DOWN) {
+        if (ev.buttons & GB_BTN_DOWN) {
             if (selection < file_count - 1) {
                 selection++;
                 /* Scroll window down if selection left the visible area. */
@@ -431,7 +458,7 @@ bool ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size)
             }
         }
 
-        if (ev & GB_BTN_UP) {
+        if (ev.buttons & GB_BTN_UP) {
             if (selection > 0) {
                 selection--;
                 /* Scroll window up if selection left the visible area. */
@@ -440,10 +467,31 @@ bool ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size)
             }
         }
 
-        if (ev & (GB_BTN_A | GB_BTN_START)) {
+        if (ev.buttons & (GB_BTN_A | GB_BTN_START)) {
             snprintf(out_path, path_size, "%s", files[selection]);
             heap_caps_free(files);
-            return true;
+            return UI_ROM_PICK_SELECTED;
         }
+
+        if (ev.actions & TP_ACTION_LOAD) {
+            heap_caps_free(files);
+            return UI_ROM_PICK_LOAD_LAST;
+        }
+    }
+}
+
+void ui_show_notice(const char *title, const char *message, uint32_t duration_ms)
+{
+    uint8_t *video_fb = msg_flip();
+
+    memset(video_fb, 0xFF, EPD_VIDEO_FB_SIZE);
+    ui_menu_row(video_fb, MENU_TITLE_ROW, title, 3, 0);
+    ui_menu_row(video_fb, 4, NULL, 0, 3);
+    ui_menu_row(video_fb, 5, message, 0, 3);
+    ui_menu_row(video_fb, 6, NULL, 0, 3);
+    msg_flip();
+
+    if (duration_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(duration_ms));
     }
 }
