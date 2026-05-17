@@ -122,6 +122,7 @@ static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_i2c_dev;
 static bool    s_inited       = false;
 static int64_t s_skip_until_us = 0;   /* µs: skip I2C until this time */
+static uint8_t s_action_prev  = 0;   /* last raw action bits from a valid GT911 read */
 
 /* ── Low-level I2C helpers ───────────────────────────────────────────────── */
 
@@ -264,6 +265,7 @@ tp_state_t tp_read_state(void)
     if (n > 5) n = 5;   /* GT911 supports max 5 simultaneous touch points */
 
     /* ── Read touch point data ────────────────────────────────────────── */
+    uint8_t raw_actions = 0;   /* action bits accumulated from this read */
     if (n > 0) {
         uint8_t pts[5 * 8] = {0};
         if (gt911_read_regs(GT911_REG_POINT1, pts, (size_t)n * 8) != ESP_OK) {
@@ -305,7 +307,7 @@ tp_state_t tp_read_state(void)
                     }
                     if (raw_x >= r->x0 && raw_x <= r->x1 &&
                         raw_y >= r->y0 && raw_y <= r->y1) {
-                        state.actions |= s_action_masks[a];
+                        raw_actions |= s_action_masks[a];
                         break;  /* matched; no need to check the second rect */
                     }
                 }
@@ -317,6 +319,15 @@ tp_state_t tp_read_state(void)
     if (gt911_write_reg(GT911_REG_STATUS, 0) != ESP_OK) {
         gt911_bus_error_recovery();
     }
+
+    /* ── Edge detection for actions ──────────────────────────────────────
+     * Only report a rising edge (first frame of contact).  s_action_prev
+     * is preserved across frames where INT is HIGH (no new GT911 sample),
+     * so a brief gap between samples does not reset the latch and re-fire
+     * the action.  It is cleared to 0 only when a valid read returns n==0
+     * (finger fully lifted). */
+    state.actions = raw_actions & (uint8_t)~s_action_prev;
+    s_action_prev = raw_actions;
 
     return state;
 }
