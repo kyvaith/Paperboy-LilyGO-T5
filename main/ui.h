@@ -43,3 +43,7 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
 
 /* Show a transient full-screen menu-style notice for the requested duration. */
 void ui_show_notice(const char *title, const char *message, uint32_t duration_ms);
+
+/* Clear EPD ghosting by flashing 5 full-black then 5 full-white frames. */
+void ui_clear_ghosting(void);
+

@@ -103,13 +103,15 @@ static const uint8_t s_btn_masks[] = {
 /* Save/load zones are intentionally left disabled until they are calibrated
  * against the baked background image. */
 static const tp_btn_zone_t s_action_zones[] = {
-    /* TP_ACTION_LOAD */ { .r = { {14, 921, 112, 958}, {0, 0, 0, 0} } },
-    /* TP_ACTION_SAVE */ { .r = { {134, 921, 233, 958}, {0, 0, 0, 0} } },
+    /* TP_ACTION_LOAD         */ { .r = { {14, 921, 112, 958}, {0, 0, 0, 0} } },
+    /* TP_ACTION_SAVE         */ { .r = { {134, 921, 233, 958}, {0, 0, 0, 0} } },
+    /* TP_ACTION_CLEAR_SCREEN */ { .r = { {30, 425, 514, 878}, {0, 0, 0, 0} } }, /* TODO: fill in emulated-screen tap coordinates */
 };
 
 static const uint8_t s_action_masks[] = {
     TP_ACTION_LOAD,
     TP_ACTION_SAVE,
+    TP_ACTION_CLEAR_SCREEN,
 };
 
 #define NUM_ACTIONS  (sizeof(s_action_zones) / sizeof(s_action_zones[0]))

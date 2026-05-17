@@ -552,3 +552,21 @@ void ui_show_notice(const char *title, const char *message, uint32_t duration_ms
         vTaskDelay(pdMS_TO_TICKS(duration_ms));
     }
 }
+
+void ui_clear_ghosting(void)
+{
+    uint8_t *fb = msg_flip();   /* submit current frame, get fresh back-buffer */
+
+    /* 5 frames of black */
+    for (int i = 0; i < 5; i++) {
+        memset(fb, 0x00, EPD_VIDEO_FB_SIZE);
+        fb = msg_flip();
+    }
+
+    /* 5 frames of white */
+    for (int i = 0; i < 5; i++) {
+        memset(fb, 0xFF, EPD_VIDEO_FB_SIZE);
+        fb = msg_flip();
+    }
+}
+

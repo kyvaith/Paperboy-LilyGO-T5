@@ -3,8 +3,9 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define TP_ACTION_LOAD 0x01
-#define TP_ACTION_SAVE 0x02
+#define TP_ACTION_LOAD          0x01
+#define TP_ACTION_SAVE          0x02
+#define TP_ACTION_CLEAR_SCREEN  0x04
 
 typedef struct {
 	uint8_t gb_buttons;
