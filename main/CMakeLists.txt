@@ -1,7 +1,19 @@
+# Select the PCM audio backend by changing PAPERBOY_AUDIO_PCM_IMPL:
+#   audio_pdm.c  — I2S PDM TX       (default; accurate PCM, quietest)
+#   audio_pwm.c  — LEDC PCM via ISR (accurate PCM, louder)
+#
+# The polyphonic backend (audio_poly_pwm.c) is always compiled in.
+# Runtime selection between PCM, Polyphony, and Mute is done in the game
+# selection menu via the "Snd:" item.
+#
+# Usage:  cmake -DPAPERBOY_AUDIO_PCM_IMPL=audio_pwm.c  (or edit below)
+set(PAPERBOY_AUDIO_PCM_IMPL "audio_pdm.c" CACHE STRING
+    "PCM audio backend source file (audio_pdm.c or audio_pwm.c)")
+
 idf_component_register(
-    SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c"
+    SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c"
     INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu"
-    REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c
+    REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c esp_adc
 )
 
 # Audio APU format: 16-bit signed integer

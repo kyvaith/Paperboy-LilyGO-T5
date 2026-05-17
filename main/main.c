@@ -28,9 +28,16 @@ static uint8_t *s_rom_data;
 static size_t s_rom_size;
 static char s_rom_path[256];
 
+typedef struct {
+    char           last_rom[256];
+    audio_engine_t audio_engine;
+} paperboy_cfg_t;
+
+static paperboy_cfg_t s_cfg;
+
 #define PAPERBOY_PERSIST_EXTENSION ".sav"
-#define PAPERBOY_STATE_EXTENSION ".state"
-#define PAPERBOY_LAST_STATE_FILE SD_MOUNT_POINT "/paperboy-last-state.txt"
+#define PAPERBOY_STATE_EXTENSION   ".state"
+#define PAPERBOY_CFG_FILE          SD_MOUNT_POINT "/paperboy.cfg"
 
 #define PAPERBOY_GB_ROM_MAX_SIZE (4 * 1024 * 1024)
 #define SD_MOUNT_POINT "/sdcard"
@@ -223,57 +230,55 @@ static bool build_state_path(const char *rom_path, char *state_path, size_t stat
     return true;
 }
 
-static bool write_last_state_path(const char *rom_path)
+static void cfg_read(paperboy_cfg_t *cfg)
 {
-    FILE *path_file;
+    cfg->last_rom[0]  = '\0';
+    cfg->audio_engine = AUDIO_ENGINE_PCM;
 
-    if (rom_path == NULL || rom_path[0] == '\0') {
-        return false;
+    FILE *f = fopen(PAPERBOY_CFG_FILE, "r");
+    if (!f) {
+        ESP_LOGI(TAG, "No config file: %s", PAPERBOY_CFG_FILE);
+        return;
     }
 
-    path_file = fopen(PAPERBOY_LAST_STATE_FILE, "wb");
-    if (path_file == NULL) {
-        ESP_LOGE(TAG, "Failed to open last-state file: %s", PAPERBOY_LAST_STATE_FILE);
-        return false;
+    char line[320];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strncmp(line, "last_rom=", 9) == 0) {
+            strlcpy(cfg->last_rom, line + 9, sizeof(cfg->last_rom));
+        } else if (strncmp(line, "audio_engine=", 13) == 0) {
+            int val = atoi(line + 13);
+            if (val >= 0 && val < (int)AUDIO_ENGINE_COUNT) {
+                cfg->audio_engine = (audio_engine_t)val;
     }
-
-    if (fprintf(path_file, "%s\n", rom_path) < 0) {
-        fclose(path_file);
-        ESP_LOGE(TAG, "Failed to write last-state path: %s", PAPERBOY_LAST_STATE_FILE);
-        return false;
+}
     }
-
-    if (fclose(path_file) != 0) {
-        ESP_LOGE(TAG, "Failed to close last-state file: %s", PAPERBOY_LAST_STATE_FILE);
-        return false;
-    }
-
-    return true;
+    fclose(f);
+    ESP_LOGI(TAG, "Config loaded: last_rom=%s audio=%d",
+             cfg->last_rom[0] ? cfg->last_rom : "(none)", (int)cfg->audio_engine);
 }
 
-static bool read_last_state_path(char *rom_path, size_t rom_path_size)
+static bool cfg_write(const paperboy_cfg_t *cfg)
 {
-    FILE *path_file;
-
-    if (rom_path == NULL || rom_path_size == 0) {
+    FILE *f = fopen(PAPERBOY_CFG_FILE, "w");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open config for writing: %s", PAPERBOY_CFG_FILE);
         return false;
     }
 
-    path_file = fopen(PAPERBOY_LAST_STATE_FILE, "rb");
-    if (path_file == NULL) {
-        ESP_LOGI(TAG, "No last-state file present: %s", PAPERBOY_LAST_STATE_FILE);
+    if (cfg->last_rom[0] != '\0') {
+        fprintf(f, "last_rom=%s\n", cfg->last_rom);
+    }
+fprintf(f, "audio_engine=%d\n", (int)cfg->audio_engine);
+
+    if (fclose(f) != 0) {
+        ESP_LOGE(TAG, "Failed to close config: %s", PAPERBOY_CFG_FILE);
         return false;
     }
 
-    if (fgets(rom_path, (int)rom_path_size, path_file) == NULL) {
-        fclose(path_file);
-        ESP_LOGE(TAG, "Failed to read last-state path");
-        return false;
-    }
-
-    fclose(path_file);
-    rom_path[strcspn(rom_path, "\r\n")] = '\0';
-    return rom_path[0] != '\0';
+    ESP_LOGI(TAG, "Config saved: last_rom=%s audio=%d",
+             cfg->last_rom[0] ? cfg->last_rom : "(none)", (int)cfg->audio_engine);
+    return true;
 }
 
 static bool save_game_persist(const char *rom_path)
@@ -470,7 +475,9 @@ static bool save_game_state(const char *rom_path)
     }
     state_file = NULL;
 
-    if (!write_last_state_path(rom_path)) {
+    strlcpy(s_cfg.last_rom, rom_path, sizeof(s_cfg.last_rom));
+    s_cfg.audio_engine = audio_get_engine();
+    if (!cfg_write(&s_cfg)) {
         goto out;
     }
 
@@ -618,6 +625,9 @@ void app_main(void)
     if (sd_err == ESP_OK) {
         char rom_path[256] = {0};
 
+        cfg_read(&s_cfg);
+        audio_set_engine(s_cfg.audio_engine);
+
         while (1) {
             const ui_rom_pick_result_t pick = ui_rom_picker(SD_MOUNT_POINT, rom_path, sizeof(rom_path));
 
@@ -626,10 +636,11 @@ void app_main(void)
             }
 
             if (pick == UI_ROM_PICK_LOAD_LAST) {
-                if (!read_last_state_path(rom_path, sizeof(rom_path))) {
+                if (s_cfg.last_rom[0] == '\0') {
                     ui_show_notice("LOAD", "No snapshot", 750);
                     continue;
                 }
+strlcpy(rom_path, s_cfg.last_rom, sizeof(rom_path));
                 load_snapshot = true;
             } else {
                 load_snapshot = false;
@@ -666,6 +677,11 @@ void app_main(void)
             if (!load_snapshot) {
                 load_game_session(s_rom_path, false);
             }
+
+            /* Persist chosen ROM and audio engine to config. */
+            strlcpy(s_cfg.last_rom, s_rom_path, sizeof(s_cfg.last_rom));
+            s_cfg.audio_engine = audio_get_engine();
+            cfg_write(&s_cfg);
 
             paperboy_gb_set_buttons(0);
             break;

@@ -3,6 +3,31 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* ── Runtime audio engine selection ─────────────────────────────────────────
+ *
+ * Must be set before the first audio_init() call (i.e. before the game is
+ * launched).  Once audio_init() has been called the selection is frozen for
+ * the lifetime of the session.
+ */
+typedef enum {
+    AUDIO_ENGINE_PCM  = 0,  /* built-in PCM backend (PDM or PWM, build-time choice) */
+    AUDIO_ENGINE_POLY = 1,  /* polyphonic square-wave buzzer (audio_poly_pwm) */
+    AUDIO_ENGINE_MUTE = 2,  /* no audio output */
+    AUDIO_ENGINE_COUNT,
+} audio_engine_t;
+
+/**
+ * Select the audio engine.  Must be called before audio_init(); calling it
+ * afterwards has no effect.
+ */
+void audio_set_engine(audio_engine_t engine);
+
+/** Return the currently selected audio engine. */
+audio_engine_t audio_get_engine(void);
+
+/** Return a short human-readable name for the given engine (never NULL). */
+const char *audio_engine_name(audio_engine_t engine);
+
 /**
  * Initialize I2S PDM TX audio output.
  *

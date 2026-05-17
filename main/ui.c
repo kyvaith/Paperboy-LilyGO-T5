@@ -2,6 +2,7 @@
 #include "msg/msg.h"
 #include "touch.h"
 #include "gbemu.h"   /* GB_BTN_* masks */
+#include "audio.h"   /* audio_engine_t, audio_set/get_engine */
 
 #include <string.h>
 #include <stdio.h>
@@ -383,8 +384,21 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
         return UI_ROM_PICK_NONE;
     }
 
-    int selection  = 0;
-    int scroll_off = 0;
+    /*
+     * Fixed header items (always before ROM files):
+     *   IDX 0 — "SETTINGS"        non-selectable section label
+     *   IDX 1 — "Audio Engine: X" selectable
+     *   IDX 2 — separator         non-selectable grey bar
+     *   IDX 3 .. 3+file_count-1   ROM files
+     */
+#define PICKER_IDX_SETTINGS  0
+#define PICKER_IDX_AUDIO     1
+#define PICKER_IDX_SEP       2
+#define PICKER_IDX_ROMS      3
+
+    int total_items = PICKER_IDX_ROMS + file_count;
+    int selection   = PICKER_IDX_ROMS;    /* default: first ROM file */
+    int scroll_off  = 0;
 
     input_reset();
 
@@ -408,29 +422,45 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
 
         /* List entries */
         for (int i = 0; i < MENU_VISIBLE; i++) {
-            int fi  = scroll_off + i;
-            int row = MENU_LIST_FIRST + i;
-            if (fi >= file_count) {
+            int list_idx = scroll_off + i;
+            int row      = MENU_LIST_FIRST + i;
+
+            if (list_idx >= total_items) {
                 ui_menu_row(video_fb, row, NULL, 0, 3);
                 continue;
             }
 
-            /* Display filename only (strip leading path). */
-            const char *slash = strrchr(files[fi], '/');
-            const char *fname = slash ? slash + 1 : files[fi];
-
+            bool sel = (list_idx == selection);
             char line[UI_SCREEN_W / CHAR_W + 2];
-            if (fi == selection) {
-                snprintf(line, sizeof(line), "> %s", fname);
-                ui_menu_row(video_fb, row, line, 3, 0);  /* inverted */
+            
+            if (list_idx == PICKER_IDX_SETTINGS) {
+                /* Section label — non-selectable, grey background */
+                ui_menu_row(video_fb, row, "SETTINGS", 0, 2);
+            } else if (list_idx == PICKER_IDX_AUDIO) {
+                /* Audio engine selector — selectable */
+                snprintf(line, sizeof(line), "%sAudio Engine: %s",
+                         sel ? "> " : "  ",
+                         audio_engine_name(audio_get_engine()));
+                ui_menu_row(video_fb, row, line,
+                            sel ? 3 : 0,
+                            sel ? 0 : 3);
+            } else if (list_idx == PICKER_IDX_SEP) {
+/* "GAMES" section label — non-selectable, grey background */
+ui_menu_row(video_fb, row, "GAMES", 0, 2);
             } else {
-                snprintf(line, sizeof(line), "  %s", fname);
-                ui_menu_row(video_fb, row, line, 0, 3);  /* normal   */
+/* ROM file */
+                const char *slash = strrchr(files[list_idx - PICKER_IDX_ROMS], '/');
+                const char *fname = slash ? slash + 1 : files[list_idx - PICKER_IDX_ROMS];
+                snprintf(line, sizeof(line), "%s%s",
+                         sel ? "> " : "  ", fname);
+                ui_menu_row(video_fb, row, line,
+                            sel ? 3 : 0,
+                            sel ? 0 : 3);
             }
         }
 
         /* Scroll-down indicator */
-        int remaining = file_count - scroll_off - MENU_VISIBLE;
+        int remaining = total_items - scroll_off - MENU_VISIBLE;
         if (remaining > 0) {
             char ind[UI_SCREEN_W / CHAR_W + 2];
             snprintf(ind, sizeof(ind), "v %d below", remaining);
@@ -439,9 +469,14 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
             ui_menu_row(video_fb, MENU_SCROLL_DOWN, NULL, 0, 3);
         }
 
-        /* Footer */
+        /* Footer — context-sensitive hint */
+if (selection == PICKER_IDX_AUDIO) {
+            ui_menu_row(video_fb, MENU_HINT_ROW,
+                        "A:cycle sound  UP/DN:nav", 0, 2);
+        } else {
         ui_menu_row(video_fb, MENU_HINT_ROW,
                     "UP/DN:scroll  A/ST:select", 0, 2);
+}
 
         /* Submit frame, get next back-buffer. */
         video_fb = msg_flip();
@@ -450,27 +485,44 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
         ui_input_t ev = input_poll();
 
         if (ev.buttons & GB_BTN_DOWN) {
-            if (selection < file_count - 1) {
-                selection++;
-                /* Scroll window down if selection left the visible area. */
+            /* Advance, skipping non-selectable items. */
+            int next = selection;
+            do { next++; } while (next < total_items &&
+                                   next != PICKER_IDX_AUDIO &&
+                                   next < PICKER_IDX_ROMS);
+            if (next < total_items) {
+                selection = next;
                 if (selection >= scroll_off + MENU_VISIBLE)
-                    scroll_off++;
+                    scroll_off = selection - MENU_VISIBLE + 1;
             }
         }
 
         if (ev.buttons & GB_BTN_UP) {
-            if (selection > 0) {
-                selection--;
-                /* Scroll window up if selection left the visible area. */
+            /* Retreat, skipping non-selectable items. */
+            int next = selection;
+            do { next--; } while (next >= 0 &&
+                                   next != PICKER_IDX_AUDIO &&
+                                   next < PICKER_IDX_ROMS);
+            if (next >= 0) {
+                selection = next;
                 if (selection < scroll_off)
-                    scroll_off--;
+                    scroll_off = selection;
             }
         }
 
         if (ev.buttons & (GB_BTN_A | GB_BTN_START)) {
-            snprintf(out_path, path_size, "%s", files[selection]);
+if (selection == PICKER_IDX_AUDIO) {
+                /* Cycle sound engine: PCM → Poly → Mute → PCM … */
+                audio_engine_t next = (audio_engine_t)
+                    ((audio_get_engine() + 1) % AUDIO_ENGINE_COUNT);
+                audio_set_engine(next);
+            } else if (selection >= PICKER_IDX_ROMS) {
+                /* A ROM file was confirmed — return it. */
+            snprintf(out_path, path_size, "%s",
+files[selection - PICKER_IDX_ROMS]);
             heap_caps_free(files);
             return UI_ROM_PICK_SELECTED;
+}
         }
 
         if (ev.actions & TP_ACTION_LOAD) {
@@ -478,6 +530,11 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
             return UI_ROM_PICK_LOAD_LAST;
         }
     }
+
+#undef PICKER_IDX_SETTINGS
+#undef PICKER_IDX_AUDIO
+#undef PICKER_IDX_SEP
+#undef PICKER_IDX_ROMS
 }
 
 void ui_show_notice(const char *title, const char *message, uint32_t duration_ms)
