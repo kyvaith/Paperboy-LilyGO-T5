@@ -47,3 +47,7 @@ void ui_show_notice(const char *title, const char *message, uint32_t duration_ms
 /* Clear EPD ghosting by flashing 5 full-black then 5 full-white frames. */
 void ui_clear_ghosting(void);
 
+/* Draw a one-row "!! BATTERY LOW !!" warning bar over the top of the
+ * video framebuffer.  Call after paperboy_gb_run_frame() on rendered frames
+ * when battery_is_low() returns true. */
+void ui_draw_bat_low_overlay(uint8_t *fb);

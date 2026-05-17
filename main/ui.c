@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "battery.h"
 #include "msg/msg.h"
 #include "touch.h"
 #include "gbemu.h"   /* GB_BTN_* masks */
@@ -406,9 +407,11 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
         /* ── Render ─────────────────────────────────────────────── */
         memset(video_fb, 0xFF, EPD_VIDEO_FB_SIZE);
 
-        /* Title bar */
+        /* Title bar — show battery voltage */
         char title[UI_SCREEN_W / CHAR_W + 2];
-        snprintf(title, sizeof(title), "SELECT ROM  [%d]", file_count);
+        uint32_t bat_mv = battery_read_mv();
+        snprintf(title, sizeof(title), "Paperboy  BAT:%lu.%02luV",
+                 bat_mv / 1000, (bat_mv % 1000) / 10);
         ui_menu_row(video_fb, MENU_TITLE_ROW, title, 3, 0);
 
         /* Scroll-up indicator */
@@ -432,7 +435,7 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
 
             bool sel = (list_idx == selection);
             char line[UI_SCREEN_W / CHAR_W + 2];
-            
+
             if (list_idx == PICKER_IDX_SETTINGS) {
                 /* Section label — non-selectable, grey background */
                 ui_menu_row(video_fb, row, "SETTINGS", 0, 2);
@@ -445,10 +448,10 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
                             sel ? 3 : 0,
                             sel ? 0 : 3);
             } else if (list_idx == PICKER_IDX_SEP) {
-/* "GAMES" section label — non-selectable, grey background */
-ui_menu_row(video_fb, row, "GAMES", 0, 2);
+                /* "GAMES" section label — non-selectable, grey background */
+                ui_menu_row(video_fb, row, "GAMES", 0, 2);
             } else {
-/* ROM file */
+                /* ROM file */
                 const char *slash = strrchr(files[list_idx - PICKER_IDX_ROMS], '/');
                 const char *fname = slash ? slash + 1 : files[list_idx - PICKER_IDX_ROMS];
                 snprintf(line, sizeof(line), "%s%s",
@@ -470,13 +473,13 @@ ui_menu_row(video_fb, row, "GAMES", 0, 2);
         }
 
         /* Footer — context-sensitive hint */
-if (selection == PICKER_IDX_AUDIO) {
+        if (selection == PICKER_IDX_AUDIO) {
             ui_menu_row(video_fb, MENU_HINT_ROW,
                         "A:cycle sound  UP/DN:nav", 0, 2);
         } else {
-        ui_menu_row(video_fb, MENU_HINT_ROW,
-                    "UP/DN:scroll  A/ST:select", 0, 2);
-}
+            ui_menu_row(video_fb, MENU_HINT_ROW,
+                        "UP/DN:scroll  A/ST:select", 0, 2);
+        }
 
         /* Submit frame, get next back-buffer. */
         video_fb = msg_flip();
@@ -511,18 +514,18 @@ if (selection == PICKER_IDX_AUDIO) {
         }
 
         if (ev.buttons & (GB_BTN_A | GB_BTN_START)) {
-if (selection == PICKER_IDX_AUDIO) {
+            if (selection == PICKER_IDX_AUDIO) {
                 /* Cycle sound engine: PCM → Poly → Mute → PCM … */
                 audio_engine_t next = (audio_engine_t)
                     ((audio_get_engine() + 1) % AUDIO_ENGINE_COUNT);
                 audio_set_engine(next);
             } else if (selection >= PICKER_IDX_ROMS) {
                 /* A ROM file was confirmed — return it. */
-            snprintf(out_path, path_size, "%s",
-files[selection - PICKER_IDX_ROMS]);
-            heap_caps_free(files);
-            return UI_ROM_PICK_SELECTED;
-}
+                snprintf(out_path, path_size, "%s",
+                         files[selection - PICKER_IDX_ROMS]);
+                heap_caps_free(files);
+                return UI_ROM_PICK_SELECTED;
+            }
         }
 
         if (ev.actions & TP_ACTION_LOAD) {
@@ -570,3 +573,7 @@ void ui_clear_ghosting(void)
     }
 }
 
+void ui_draw_bat_low_overlay(uint8_t *fb)
+{
+    ui_menu_row(fb, MENU_TITLE_ROW, "!! BATTERY LOW !!", 3, 0);
+}

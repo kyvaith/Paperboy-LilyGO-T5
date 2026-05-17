@@ -20,6 +20,7 @@
 #include "background.h"
 #include "touch.h"
 #include "ui.h"
+#include "battery.h"
 #include "profiler.h"
 
 static const char *TAG = "paperboy";
@@ -250,8 +251,8 @@ static void cfg_read(paperboy_cfg_t *cfg)
             int val = atoi(line + 13);
             if (val >= 0 && val < (int)AUDIO_ENGINE_COUNT) {
                 cfg->audio_engine = (audio_engine_t)val;
-    }
-}
+            }
+        }
     }
     fclose(f);
     ESP_LOGI(TAG, "Config loaded: last_rom=%s audio=%d",
@@ -269,7 +270,7 @@ static bool cfg_write(const paperboy_cfg_t *cfg)
     if (cfg->last_rom[0] != '\0') {
         fprintf(f, "last_rom=%s\n", cfg->last_rom);
     }
-fprintf(f, "audio_engine=%d\n", (int)cfg->audio_engine);
+    fprintf(f, "audio_engine=%d\n", (int)cfg->audio_engine);
 
     if (fclose(f) != 0) {
         ESP_LOGE(TAG, "Failed to close config: %s", PAPERBOY_CFG_FILE);
@@ -599,6 +600,7 @@ void app_main(void)
     msg_start();
 
     tp_init();  /* GT911 touch — non-fatal if absent */
+    battery_init();
 
     uint8_t *fb = (uint8_t *)heap_caps_calloc(1, EPD_FB_SIZE, MALLOC_CAP_SPIRAM);
     memset(fb, 0xff, EPD_FB_SIZE);
@@ -640,7 +642,7 @@ void app_main(void)
                     ui_show_notice("LOAD", "No snapshot", 750);
                     continue;
                 }
-strlcpy(rom_path, s_cfg.last_rom, sizeof(rom_path));
+                strlcpy(rom_path, s_cfg.last_rom, sizeof(rom_path));
                 load_snapshot = true;
             } else {
                 load_snapshot = false;
@@ -751,6 +753,15 @@ strlcpy(rom_path, s_cfg.last_rom, sizeof(rom_path));
             continue;
         }
 
+        if (action_edges & TP_ACTION_CLEAR_SCREEN) {
+            paperboy_gb_set_buttons(0);
+            ui_clear_ghosting();
+            video_fb = msg_flip();
+            vsync_ref = msg_get_vsync_count();
+            skip_count = 0;
+            continue;
+        }
+
         bool skip_render = (skip_count > 0);
 
         PROF_BEGIN(PROF_FRAME);
@@ -760,6 +771,11 @@ strlcpy(rom_path, s_cfg.last_rom, sizeof(rom_path));
             continue;
         }
         PROF_END(PROF_FRAME);
+
+        /* Battery-low overlay: overwrite the top row of the game frame. */
+        if (!skip_render && battery_is_low()) {
+            ui_draw_bat_low_overlay(video_fb);
+        }
 
         /* Check whether at least one VSYNC fired while we were rendering. */
         bool missed = (msg_get_vsync_count() != vsync_ref);
