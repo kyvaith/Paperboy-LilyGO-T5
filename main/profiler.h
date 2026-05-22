@@ -30,6 +30,9 @@
  * Output (once per second via ESP_LOGI, tag "prof"):
  *   42 fr (8 skip) | cpu 9.80ms  lcd 3.12ms  flip 2.40ms  touch 0.08ms  audio 1.20ms
  *                  | total 16.60ms / 16.67ms budget (99.6%)
+ *
+ * Optional long-window output (controlled by PAPERBOY_PROF_SPEED_WINDOW_MS):
+ *   avg cpu speed over 120.0s (7167 fr): 1.82x DMG (avg cpu 9.14ms/fr)
  */
 
 #include <stdbool.h>

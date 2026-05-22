@@ -18,3 +18,9 @@
 #define PAPERBOY_AUDIO_RING_FRAMES              6u
 #define PAPERBOY_AUDIO_TARGET_SAMPLES_PER_FRAME 704u
 #define PAPERBOY_AUDIO_BUDGET_MS                2
+
+/*
+ * Long-window profiler averaging for emulator core comparisons.
+ * Set to 0 to disable the extra summary log.
+ */
+#define PAPERBOY_PROF_SPEED_WINDOW_MS           120000u
