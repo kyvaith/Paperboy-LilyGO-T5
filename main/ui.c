@@ -282,7 +282,7 @@ static int scan_dir(const char *dir_path, ui_path_t *files,
             if (!has_rom_extension(ent->d_name)) {
                 continue;
             }
-            strncpy(files[count], full, UI_PATH_MAX - 1);
+            strlcpy(files[count], full, UI_PATH_MAX - 1);
             files[count][UI_PATH_MAX - 1] = '\0';
             count++;
         }
