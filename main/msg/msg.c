@@ -78,7 +78,16 @@ static uint8_t push_lut_w[16];
 static uint8_t push_lut_b[16];
 
 #if defined(PLAT_LILYGO_T5_EPAPER_S3)
-#define LILYGO_ROW_CKV_HIGH_TICKS   45u
+#define LILYGO_ROW_CKV_HIGH_TICKS   300u
+#endif
+
+#if defined(PLAT_LILYGO_T5_EPAPER_S3)
+static uint8_t IRAM_ATTR msg_reverse_epd_pixel_pairs(uint8_t value) {
+    return ((value & 0x03u) << 6) |
+           ((value & 0x0cu) << 2) |
+           ((value & 0x30u) >> 2) |
+           ((value & 0xc0u) >> 6);
+}
 #endif
 
 static bool dma_done_callback(esp_lcd_panel_io_handle_t panel_io,
@@ -271,6 +280,9 @@ static void IRAM_ATTR msg_update_task(void *arg) {
                             *stptr++ = state;
                             incoming_pixels <<= 2;
                         }
+#if defined(PLAT_LILYGO_T5_EPAPER_S3)
+                        out = msg_reverse_epd_pixel_pairs(out);
+#endif
                         *wrptr++ = out;
                     }
                 }
@@ -412,7 +424,11 @@ void msg_init(void) {
         push_lut_b[i] = 0;
         push_lut_w[i] = 0;
         for (int j = 0; j < 4; j++) {
-            if ((i >> j) & 0x01) {
+            int bit = j;
+#if defined(PLAT_LILYGO_T5_EPAPER_S3)
+            bit = 3 - j;
+#endif
+            if ((i >> bit) & 0x01) {
                 push_lut_b[i] |= (0x1 << (j * 2));
                 push_lut_w[i] |= (0x2 << (j * 2));
             }

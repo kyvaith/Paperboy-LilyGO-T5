@@ -114,10 +114,21 @@ static void copy_lcd_line(unsigned line)
     memcpy(&s_previous_lcd[row_offset], &s_lcd[row_offset], LCD_WIDTH_PACKED);
 }
 
+static uint8_t gb_dither_mask(uint8_t shade, unsigned x, unsigned line)
+{
+    static const uint8_t bayer4[4][4] = {
+        { 0,  8,  2, 10},
+        {12,  4, 14,  6},
+        { 3, 11,  1,  9},
+        {15,  7, 13,  5},
+    };
+    static const uint8_t threshold[4] = {0, 5, 10, 16};
+
+    return bayer4[line & 0x3u][x & 0x3u] < threshold[shade & 0x3u] ? 0x7 : 0x0;
+}
+
 static void blit_lcd_to_epd(uint8_t *fb, const uint16_t *dirty_lines)
 {
-    const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
-
     for (unsigned line = 0; line < GB_LCD_HEIGHT; line++) {
         if (dirty_lines != NULL && ((dirty_lines[line >> 4] >> (line & 0xFu)) & 1u) == 0u) {
             continue;
@@ -131,21 +142,14 @@ static void blit_lcd_to_epd(uint8_t *fb, const uint16_t *dirty_lines)
         const uint16_t clear_tmp = 0xe000u >> offset_x;
         const uint8_t clrmask = (uint8_t)~(clear_tmp >> 8);
         const uint8_t clrmask_crossing = (uint8_t)~(clear_tmp & 0xffu);
-        uint8_t setmask[4];
-        uint8_t setmask_crossing[4];
-
-        for (int shade = 0; shade < 4; shade++) {
-            const uint16_t tmp = dithermap[shade] >> offset_x;
-            setmask[shade] = (uint8_t)(tmp >> 8);
-            setmask_crossing[shade] = (uint8_t)(tmp & 0xffu);
-        }
 
         if (!crossing) {
             for (unsigned x = 0; x < GB_LCD_WIDTH; x++) {
                 uint8_t value = *wrptr;
                 const uint8_t pixel = gb_lcd_get_pixel(s_lcd, x, line);
+                const uint16_t tmp = ((uint16_t)gb_dither_mask(pixel, x, line) << 13) >> offset_x;
                 value &= clrmask;
-                value |= setmask[pixel];
+                value |= (uint8_t)(tmp >> 8);
                 *wrptr = value;
                 wrptr += stride;
             }
@@ -155,12 +159,13 @@ static void blit_lcd_to_epd(uint8_t *fb, const uint16_t *dirty_lines)
         for (unsigned x = 0; x < GB_LCD_WIDTH; x++) {
             uint8_t value = *wrptr;
             const uint8_t pixel = gb_lcd_get_pixel(s_lcd, x, line);
+            const uint16_t tmp = ((uint16_t)gb_dither_mask(pixel, x, line) << 13) >> offset_x;
             value &= clrmask;
-            value |= setmask[pixel];
+            value |= (uint8_t)(tmp >> 8);
             *wrptr++ = value;
             value = *wrptr;
             value &= clrmask_crossing;
-            value |= setmask_crossing[pixel];
+            value |= (uint8_t)(tmp & 0xffu);
             *wrptr = value;
             wrptr += stride;
         }
