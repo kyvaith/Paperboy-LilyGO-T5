@@ -15,11 +15,11 @@ typedef struct {
 /**
  * Initialise the GT911 capacitive touchscreen over I2C.
  *
- * M5PaperS3 wiring:
- *   SDA  = GPIO 41
- *   SCL  = GPIO 42
- *   INT  = GPIO 48  (active-low when touch data is ready)
- *   I2C  = I2C_NUM_1 @ 400 kHz
+ * LILYGO T5 4.7" ESP32-S3 touch wiring:
+ *   SDA  = GPIO 18
+ *   SCL  = GPIO 17
+ *   INT  = GPIO 47  (active-low when touch data is ready)
+ *   I2C  = I2C_NUM_0 @ 100 kHz
  *   Addresses probed: 0x5D, 0x14 (GT911 supports both)
  *
  * Safe to call even if the hardware is absent; tp_read_buttons() will then

@@ -1,69 +1,104 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+# Paperboy LilyGO T5 4.7 e-Paper
 
-# Blink Example
+Paperboy LilyGO T5 is an ESP32-S3 Game Boy emulator adapted for the
+[LILYGO T5 4.7 inch e-Paper](https://lilygo.cc/en-us/products/t5-4-7-inch-e-paper-v2-3)
+board.
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+This repository is an adaptation of Wenting Zhang's Paperboy project:
+https://gitlab.com/zephray/paperboy
 
-This example demonstrates how to blink a LED by using the GPIO driver or using the [led_strip](https://components.espressif.com/component/espressif/led_strip) library if the LED is addressable e.g. [WS2812](https://cdn-shop.adafruit.com/datasheets/WS2812B.pdf). The `led_strip` library is installed via [component manager](main/idf_component.yml).
+The port replaces the original display path with the LILYGO ED047TC1 e-paper
+driver, adds board-specific SD, battery and GT911 touch wiring, and includes a
+USB serial control fallback so the emulator can be tested even before the touch
+coordinate map is fully calibrated.
 
-## How to Use Example
+## Current Status
 
-Before project configuration and build, be sure to set the correct chip target using `idf.py set-target <chip_name>`.
+- Target board: LILYGO T5 4.7 inch e-Paper ESP32-S3, 16 MB flash, 8 MB PSRAM.
+- Display: ED047TC1 e-paper panel driven through the LILYGO I80/I2S-style
+  e-paper driver.
+- Touch: GT911 is initialized on the LILYGO touch pins and is detected on the
+  tested board at I2C address `0x5D`.
+- Input: USB-Serial/JTAG controls over the same COM port used for flashing.
+- SD card: optional for first boot; required for loading your own ROM files and
+  for persistent save-state storage.
+- Built-in test ROM: GB Corp, a small MIT-licensed homebrew Game Boy ROM, is
+  embedded for smoke testing when no SD card is mounted.
 
-### Hardware Required
+## Controls
 
-* A development board with normal LED or addressable LED on-board (e.g., ESP32-S3-DevKitC, ESP32-C6-DevKitC etc.)
-* A USB cable for Power supply and programming
+Open a serial monitor at `115200` baud on the board COM port.
 
-See [Development Boards](https://www.espressif.com/en/products/devkits) for more information about it.
-
-### Configure the Project
-
-Open the project configuration menu (`idf.py menuconfig`).
-
-In the `Example Configuration` menu:
-
-* Select the LED type in the `Blink LED type` option.
-  * Use `GPIO` for regular LED
-  * Use `LED strip` for addressable LED
-* If the LED type is `LED strip`, select the backend peripheral
-  * `RMT` is only available for ESP targets with RMT peripheral supported
-  * `SPI` is available for all ESP targets
-* Set the GPIO number used for the signal in the `Blink GPIO number` option.
-* Set the blinking period in the `Blink period in ms` option.
-
-### Build and Flash
-
-Run `idf.py -p PORT flash monitor` to build, flash and monitor the project.
-
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for full steps to configure and use ESP-IDF to build projects.
-
-## Example Output
-
-As you run the example, you will see the LED blinking, according to the previously defined period. For the addressable LED, you can also change the LED color by setting the `led_strip_set_pixel(led_strip, 0, 16, 16, 16);` (LED Strip, Pixel Number, Red, Green, Blue) with values from 0 to 255 in the [source file](main/blink_example_main.c).
-
-```text
-I (315) example: Example configured to blink addressable LED!
-I (325) example: Turning the LED OFF!
-I (1325) example: Turning the LED ON!
-I (2325) example: Turning the LED OFF!
-I (3325) example: Turning the LED ON!
-I (4325) example: Turning the LED OFF!
-I (5325) example: Turning the LED ON!
-I (6325) example: Turning the LED OFF!
-I (7325) example: Turning the LED ON!
-I (8325) example: Turning the LED OFF!
+```powershell
+python -m platformio device monitor -p COM6 -b 115200
 ```
 
-Note: The color order could be different according to the LED model.
+Keyboard mapping:
 
-The pixel number indicates the pixel position in the LED strip. For a single LED, use 0.
+| Key | Game Boy input |
+| --- | --- |
+| `W`, arrow up | Up |
+| `S`, arrow down | Down |
+| `A`, arrow left | Left |
+| `D`, arrow right | Right |
+| `J` or `X` | A |
+| `K` or `Z` | B |
+| `Enter` | Start |
+| `Space` | Select |
+| `P` | Save state, SD-backed ROMs only |
+| `R` | Load state, SD-backed ROMs only |
+| `C` | Clear ghosting |
 
-## Troubleshooting
+## SD Card Usage
 
-* If the LED isn't blinking, check the GPIO or the LED type selection in the `Example Configuration` menu.
+The firmware boots without an SD card by running the embedded GB Corp test ROM.
+To load your own games, use a FAT32-formatted microSD card and place `.gb` or
+`.gbc` files in the root directory or one directory level below it.
 
-For any technical queries, please open an [issue](https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you soon.
+When SD mounting succeeds, the on-device picker lists ROM files and audio
+settings. Save states and SRAM persistence are written next to the selected ROM.
+When the built-in ROM is running, save and load commands are ignored because
+there is no writable SD-backed ROM path.
+
+## Build and Flash
+
+The project uses PlatformIO with ESP-IDF.
+
+Install PlatformIO, connect the board over USB, then build and flash:
+
+```powershell
+python -m platformio run -e lilygo-t5-epaper-s3
+python -m platformio run -e lilygo-t5-epaper-s3 -t upload --upload-port COM6
+```
+
+Use the actual COM port assigned by your system if it is not `COM6`.
+
+If PlatformIO or CMake has trouble with spaces in the checkout path, clone the
+repository into a path without spaces.
+
+## Repository Layout
+
+- `main/` - emulator application, display pipeline, input, audio, touch and
+  board support.
+- `main/lilygo_epd/` - LILYGO ED047TC1 display driver code used by this port.
+- `assets/gbcorp.gb` - embedded homebrew test ROM source asset.
+- `boards/T5-ePaper-S3.json` - PlatformIO board definition.
+- `platformio.ini` - PlatformIO build environment.
+- `partitions.csv` - 16 MB flash partition layout.
+
+## Test ROM
+
+The embedded smoke-test ROM is GB Corp by Dr. Ludos. It is listed by Homebrew
+Hub as MIT licensed:
+
+- https://hh.gbdev.io/game/gb-corp/
+- https://github.com/drludos/GBcorp
+
+Only use ROM files that you have the legal right to use.
+
+## Notes
+
+This is still a hardware adaptation, not a polished handheld product. The
+display path, serial input and built-in ROM fallback are working on the tested
+LILYGO board. Touch is detected, but the touch button zones may need additional
+coordinate calibration for comfortable standalone use.

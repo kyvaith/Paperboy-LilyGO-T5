@@ -19,9 +19,11 @@
 #include "audio.h"
 #include "background.h"
 #include "touch.h"
+#include "serial_input.h"
 #include "ui.h"
 #include "battery.h"
 #include "profiler.h"
+#include "sample_rom.h"
 
 static const char *TAG = "paperboy";
 static sdmmc_card_t *s_sd_card;
@@ -43,11 +45,11 @@ static paperboy_cfg_t s_cfg;
 #define PAPERBOY_GB_ROM_MAX_SIZE (4 * 1024 * 1024)
 #define SD_MOUNT_POINT "/sdcard"
 
-/* M5PaperS3 SD SPI pins */
-#define SD_PIN_CLK 39
-#define SD_PIN_MOSI 38
-#define SD_PIN_MISO 40
-#define SD_PIN_CS 47
+/* LILYGO T5 4.7" ESP32-S3 SD SPI pins */
+#define SD_PIN_CLK 11
+#define SD_PIN_MOSI 15
+#define SD_PIN_MISO 16
+#define SD_PIN_CS 42
 
 /*
  * GB rendering: 3× scale, Bayer-like dithering, 90° CW rotation.
@@ -85,6 +87,7 @@ static esp_err_t sdcard_mount(void)
     esp_err_t err;
 
     host.slot = SPI2_HOST;
+    host.max_freq_khz = 4000;
     slot_config.host_id = host.slot;
     slot_config.gpio_cs = SD_PIN_CS;
 
@@ -177,6 +180,23 @@ static bool load_gb_rom_from_file(const char *path)
     return true;
 }
 
+static void use_builtin_sample_rom(const uint8_t **rom_data, size_t *rom_size)
+{
+    free(s_rom_data);
+    s_rom_data = NULL;
+    s_rom_size = 0;
+
+    *rom_data = sample_rom_gb;
+    *rom_size = sample_rom_gb_len;
+    strlcpy(s_rom_path, "builtin:/gbcorp.gb", sizeof(s_rom_path));
+    ESP_LOGI(TAG, "Using built-in sample ROM: GB Corp (%u bytes)", (unsigned)sample_rom_gb_len);
+}
+
+static bool rom_path_on_sd(const char *rom_path)
+{
+    return rom_path != NULL && strncmp(rom_path, SD_MOUNT_POINT "/", strlen(SD_MOUNT_POINT) + 1) == 0;
+}
+
 static bool build_save_path(const char *rom_path, char *save_path, size_t save_path_size)
 {
     const char *extension = PAPERBOY_PERSIST_EXTENSION;
@@ -234,7 +254,7 @@ static bool build_state_path(const char *rom_path, char *state_path, size_t stat
 static void cfg_read(paperboy_cfg_t *cfg)
 {
     cfg->last_rom[0]  = '\0';
-    cfg->audio_engine = AUDIO_ENGINE_PCM;
+    cfg->audio_engine = AUDIO_ENGINE_MUTE;
 
     FILE *f = fopen(PAPERBOY_CFG_FILE, "r");
     if (!f) {
@@ -558,6 +578,11 @@ static bool save_game_session(const char *rom_path)
 {
     bool persist_ok = true;
 
+    if (!rom_path_on_sd(rom_path)) {
+        ESP_LOGW(TAG, "Save skipped: no writable SD-backed ROM is active");
+        return false;
+    }
+
     if (paperboy_gb_has_persist()) {
         persist_ok = save_game_persist(rom_path);
     }
@@ -572,6 +597,11 @@ static bool save_game_session(const char *rom_path)
 static bool load_game_session(const char *rom_path, bool include_snapshot)
 {
     bool state_loaded = true;
+
+    if (!rom_path_on_sd(rom_path)) {
+        ESP_LOGI(TAG, "Load skipped: no SD-backed ROM is active");
+        return false;
+    }
 
     if (paperboy_gb_has_persist()) {
         load_game_persist(rom_path);
@@ -589,17 +619,20 @@ static bool load_game_session(const char *rom_path, bool include_snapshot)
 void app_main(void)
 {
     esp_err_t sd_err;
-    bool gb_ok;
+    bool gb_ok = false;
     bool load_snapshot = false;
     uint8_t prev_actions = 0;
     const uint8_t *rom_data = NULL;
     size_t rom_size = 0;
 
     ESP_LOGI(TAG, "Initializing MSG");
+    esp_log_level_set("prof", ESP_LOG_NONE);
     msg_init();
     msg_start();
 
     tp_init();  /* GT911 touch — non-fatal if absent */
+    serial_input_init();
+    audio_set_engine(AUDIO_ENGINE_MUTE);
     battery_init();
 
     uint8_t *fb = (uint8_t *)heap_caps_calloc(1, EPD_FB_SIZE, MALLOC_CAP_SPIRAM);
@@ -689,10 +722,11 @@ void app_main(void)
             break;
         }
     } else {
-        ESP_LOGW(TAG, "SD init skipped, falling back to built-in stub ROM");
+        ESP_LOGW(TAG, "SD init skipped, falling back to built-in sample ROM");
     }
 
     if (rom_data == NULL) {
+        use_builtin_sample_rom(&rom_data, &rom_size);
         gb_ok = paperboy_gb_init(rom_data, rom_size);
         if (!gb_ok) {
             ESP_LOGW(TAG, "Peanut-GB init skipped: %s", paperboy_gb_last_error());
@@ -725,6 +759,9 @@ void app_main(void)
         /* Poll touchscreen and update GB button state every emulated frame. */
         PROF_BEGIN(PROF_TOUCH);
         touch_state = tp_read_state();
+        tp_state_t serial_state = serial_input_read_state();
+        touch_state.gb_buttons |= serial_state.gb_buttons;
+        touch_state.actions    |= serial_state.actions;
         paperboy_gb_set_buttons(touch_state.gb_buttons);
         PROF_END(PROF_TOUCH);
 

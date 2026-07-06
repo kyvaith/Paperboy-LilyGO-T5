@@ -39,6 +39,9 @@
 #include "audio.h"
 #include "paperboy_config.h"
 #include "msg.h"
+#if defined(PLAT_LILYGO_T5_EPAPER_S3)
+#include "lilygo_epd/ed047tc1.h"
+#endif
 
 //#define TIME_PRINT
 
@@ -74,6 +77,10 @@ static int dma_front_buffer;
 static uint8_t push_lut_w[16];
 static uint8_t push_lut_b[16];
 
+#if defined(PLAT_LILYGO_T5_EPAPER_S3)
+#define LILYGO_ROW_CKV_HIGH_TICKS   45u
+#endif
+
 static bool dma_done_callback(esp_lcd_panel_io_handle_t panel_io,
         esp_lcd_panel_io_event_data_t *edata, void *user_ctx) {
     dma_done = true;
@@ -81,6 +88,7 @@ static bool dma_done_callback(esp_lcd_panel_io_handle_t panel_io,
 }
 
 static void msg_power_on() {
+#if defined(PLAT_M5PAPERS3)
     // Enable power
     gpio_set_level(EPD_PWR_EN_PIN, 1);
     ets_delay_us(100);
@@ -89,9 +97,13 @@ static void msg_power_on() {
     // Set default IO states
     gpio_set_level(EPD_GDCK_PIN, 1);
     gpio_set_level(EPD_GDSP_PIN, 1);
+#elif defined(PLAT_LILYGO_T5_EPAPER_S3)
+    epd_poweron();
+#endif
 }
 
 static void msg_power_off() {
+#if defined(PLAT_M5PAPERS3)
     // Reset IO levels
     gpio_set_level(EPD_GDCK_PIN, 0);
     gpio_set_level(EPD_GDSP_PIN, 0);
@@ -100,21 +112,28 @@ static void msg_power_off() {
     ets_delay_us(100);
     gpio_set_level(EPD_PWR_EN_PIN, 0);
     ets_delay_us(100);
+#elif defined(PLAT_LILYGO_T5_EPAPER_S3)
+    epd_poweroff();
+#endif
 }
 
 static void IRAM_ATTR msg_send_row(uint8_t *data) {
     // Wait if last line hasn't finished
     while (!dma_done); // Spin loop, shouldn't yield
 
+#if defined(PLAT_M5PAPERS3)
     gpio_set_level(EPD_GDCK_PIN, 0);
     gpio_set_level(EPD_SDLE_PIN, 1);
     gpio_set_level(EPD_SDLE_PIN, 0);
     gpio_set_level(EPD_GDCK_PIN, 1);
 
+    dma_done = false;
     esp_lcd_panel_io_tx_color(panel_io_handle, -1, data,
         (EPD_WIDTH / 4) + EPD_LINE_PAD);
-
-    dma_done = false;
+#elif defined(PLAT_LILYGO_T5_EPAPER_S3)
+    memcpy(epd_get_current_buffer(), data, (EPD_WIDTH / 4) + EPD_LINE_PAD);
+    epd_output_row(LILYGO_ROW_CKV_HIGH_TICKS);
+#endif
 }
 
 static void IRAM_ATTR msg_update_task(void *arg) {
@@ -126,8 +145,6 @@ static void IRAM_ATTR msg_update_task(void *arg) {
 #endif
 
     while (true) {
-        int64_t frame_start_us = esp_timer_get_time();
-
         // JUST KEEP CRANKING
         s_vsync_count++;
         if (flip_req) {
@@ -148,6 +165,7 @@ static void IRAM_ATTR msg_update_task(void *arg) {
 #endif
 
         // Frame start sequence
+#if defined(PLAT_M5PAPERS3)
         gpio_set_level(EPD_GDCK_PIN, 1);
         ets_delay_us(7);
         gpio_set_level(EPD_GDSP_PIN, 0);
@@ -162,6 +180,9 @@ static void IRAM_ATTR msg_update_task(void *arg) {
             gpio_set_level(EPD_GDCK_PIN, 1);
             gpio_set_level(EPD_GDCK_PIN, 0);
         }
+#elif defined(PLAT_LILYGO_T5_EPAPER_S3)
+        epd_start_frame();
+#endif
 
         if (img_req) {
             // Send the image for fixed amount of frames
@@ -175,6 +196,7 @@ static void IRAM_ATTR msg_update_task(void *arg) {
             uint8_t *lutptr = img_to_white ? push_lut_w : push_lut_b;
             for (int i = 0; i < EPD_HEIGHT; i++) {
                 uint8_t *wrptr = dma_buf[dma_front_buffer];
+                memset(wrptr, 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
                 for (int j = 0; j < EPD_WIDTH / 8; j++) {
                     uint8_t rd = *rdptr++;
                     *wrptr++ = lutptr[rd >> 4];
@@ -285,6 +307,9 @@ static void IRAM_ATTR msg_update_task(void *arg) {
         memset(dma_buf[0], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
         msg_send_row(dma_buf[0]);
         while (!dma_done);
+#if defined(PLAT_LILYGO_T5_EPAPER_S3)
+        epd_end_frame();
+#endif
 
 #ifdef TIME_PRINT
         uint32_t end = esp_timer_get_time();
@@ -297,17 +322,13 @@ static void IRAM_ATTR msg_update_task(void *arg) {
 #endif
 
         audio_service_frame();
-
-        // int64_t frame_elapsed_us = esp_timer_get_time() - frame_start_us;
-        // if (FRAME_TARGET_US > 0 && frame_elapsed_us < FRAME_TARGET_US) {
-        //     ets_delay_us((uint32_t)(FRAME_TARGET_US - frame_elapsed_us));
-        // }
     }
 }
 
 // Public
 void msg_init(void) {
     // Initialize IO
+#if defined(PLAT_M5PAPERS3)
     gpio_config_t cfg = {
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
@@ -324,8 +345,12 @@ void msg_init(void) {
         (1ull << EPD_GDSP_PIN) |
         (1ull << EPD_GDCK_PIN);
     ESP_ERROR_CHECK(gpio_config(&cfg));
+#elif defined(PLAT_LILYGO_T5_EPAPER_S3)
+    epd_base_init(EPD_WIDTH);
+#endif
 
     // Initialize bus IO
+#if defined(PLAT_M5PAPERS3)
     esp_lcd_i80_bus_config_t i80_bus_config = {
         .dc_gpio_num = (gpio_num_t)49, // dummy pin
         .wr_gpio_num = (gpio_num_t)EPD_SDCK_PIN,
@@ -370,6 +395,7 @@ void msg_init(void) {
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(i80_bus_handle, &panel_io_config,
         &panel_io_handle));
+#endif
     
     // Allocate buffers
     for (int i = 0; i < 2; i++) {

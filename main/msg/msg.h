@@ -26,13 +26,13 @@
 #include <stdbool.h>
 
 // Platform definition
-#define PLAT_M5PAPERS3
+#define PLAT_LILYGO_T5_EPAPER_S3
 
 #if defined(PLAT_M5PAPERS3)
 #define EPD_WIDTH           960
 #define EPD_HEIGHT          540
 #define EPD_LINE_PAD        16
-#define EPD_XCK             24000000
+#define EPD_XCK             10000000
 #define EPD_BUSW            8
 
 #define EPD_IMAGE_FIELDS    8
@@ -53,6 +53,35 @@
 #define EPD_D5_PIN          11
 #define EPD_D6_PIN          8
 #define EPD_D7_PIN          10
+#elif defined(PLAT_LILYGO_T5_EPAPER_S3)
+#define EPD_WIDTH           960
+#define EPD_HEIGHT          540
+#define EPD_LINE_PAD        8
+#define EPD_XCK             10000000
+#define EPD_BUSW            8
+
+#define EPD_IMAGE_FIELDS    8
+
+/*
+ * LILYGO T5 4.7" ESP32-S3 (ED047TC1) uses a 74HCT4094 config register for
+ * power, latch, STV, mode and output-enable signals. The source bus is still
+ * driven through ESP-IDF's i80/LCD peripheral.
+ */
+#define EPD_CFG_DATA_PIN    13
+#define EPD_CFG_CLK_PIN     12
+#define EPD_CFG_STR_PIN     0
+#define EPD_CKV_PIN         38
+#define EPD_STH_PIN         40
+#define EPD_CKH_PIN         41
+
+#define EPD_D0_PIN          8
+#define EPD_D1_PIN          1
+#define EPD_D2_PIN          2
+#define EPD_D3_PIN          3
+#define EPD_D4_PIN          4
+#define EPD_D5_PIN          5
+#define EPD_D6_PIN          6
+#define EPD_D7_PIN          7
 #endif
 
 #define EPD_VIDEO_WIDTH     (144*3)

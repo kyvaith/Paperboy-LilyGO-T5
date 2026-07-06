@@ -7,16 +7,17 @@
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "rom/ets_sys.h"
 
 static const char *TAG = "touch";
 
-/* ── Hardware constants (M5PaperS3) ─────────────────────────────────────── */
+/* Hardware constants (LILYGO T5 4.7" ESP32-S3 touch version). */
 
-#define GT911_I2C_PORT   I2C_NUM_1
-#define GT911_PIN_SDA    41
-#define GT911_PIN_SCL    42
-#define GT911_PIN_INT    48   /* active-low when a touch sample is ready */
-#define GT911_FREQ_HZ    400000
+#define GT911_I2C_PORT   I2C_NUM_0
+#define GT911_PIN_SDA    18
+#define GT911_PIN_SCL    17
+#define GT911_PIN_INT    47   /* active-low when a touch sample is ready */
+#define GT911_FREQ_HZ    100000
 
 /* I2C transaction timeout.  Long enough for the GT911 to respond, short
  * enough that repeated failures don't keep the task WDT from being fed. */
@@ -100,12 +101,12 @@ static const uint8_t s_btn_masks[] = {
 
 #define NUM_BUTTONS  (sizeof(s_btn_zones) / sizeof(s_btn_zones[0]))
 
-/* Save/load zones are intentionally left disabled until they are calibrated
- * against the baked background image. */
+/* System actions are handled over COM for now. Keep touch actions disabled
+ * until the LILYGO coordinate map is calibrated against the actual screen. */
 static const tp_btn_zone_t s_action_zones[] = {
-    /* TP_ACTION_LOAD         */ { .r = { {14, 921, 112, 958}, {0, 0, 0, 0} } },
-    /* TP_ACTION_SAVE         */ { .r = { {134, 921, 233, 958}, {0, 0, 0, 0} } },
-    /* TP_ACTION_CLEAR_SCREEN */ { .r = { {30, 425, 514, 878}, {0, 0, 0, 0} } }, /* TODO: fill in emulated-screen tap coordinates */
+    /* TP_ACTION_LOAD         */ { .r = { {0, 0, 0, 0}, {0, 0, 0, 0} } },
+    /* TP_ACTION_SAVE         */ { .r = { {0, 0, 0, 0}, {0, 0, 0, 0} } },
+    /* TP_ACTION_CLEAR_SCREEN */ { .r = { {0, 0, 0, 0}, {0, 0, 0, 0} } },
 };
 
 static const uint8_t s_action_masks[] = {
@@ -160,11 +161,32 @@ static void gt911_bus_error_recovery(void)
     s_skip_until_us = esp_timer_get_time() + TOUCH_ERROR_COOLDOWN_US;
 }
 
+static void gt911_log_i2c_scan(void)
+{
+    bool any = false;
+
+    for (uint8_t addr = 1; addr < 0x7F; addr++) {
+        if (i2c_master_probe(s_i2c_bus, addr, 10) == ESP_OK) {
+            ESP_LOGW(TAG, "I2C device found at 0x%02X on touch bus", addr);
+            any = true;
+        }
+    }
+
+    if (!any) {
+        ESP_LOGW(TAG, "I2C scan found no devices on touch bus");
+    }
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 esp_err_t tp_init(void)
 {
     esp_err_t err;
+
+    /* Wake GT911 if a previous firmware left it asleep. */
+    gpio_set_direction((gpio_num_t)GT911_PIN_INT, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)GT911_PIN_INT, 1);
+    ets_delay_us(5000);
 
     /* Configure INT as input with internal pull-up.
      * GT911 INT is open-drain: it can only pull LOW; it relies on a pull-up
@@ -180,14 +202,14 @@ esp_err_t tp_init(void)
     };
     gpio_config(&io_conf);
 
-    /* Create I2C master bus on I2C_NUM_1 (external pull-ups fitted on PCB). */
+    /* Create I2C master bus on the LILYGO touch pins. */
     i2c_master_bus_config_t bus_cfg = {
         .i2c_port              = GT911_I2C_PORT,
         .sda_io_num            = GT911_PIN_SDA,
         .scl_io_num            = GT911_PIN_SCL,
         .clk_source            = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt     = 7,
-        .flags.enable_internal_pullup = false,
+        .flags.enable_internal_pullup = true,
     };
     err = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
     if (err != ESP_OK) {
@@ -204,6 +226,7 @@ esp_err_t tp_init(void)
         }
     }
     if (found_addr == 0) {
+        gt911_log_i2c_scan();
         ESP_LOGW(TAG, "GT911 not found (SDA=GPIO%d SCL=GPIO%d) — touch disabled",
                  GT911_PIN_SDA, GT911_PIN_SCL);
         i2c_del_master_bus(s_i2c_bus);

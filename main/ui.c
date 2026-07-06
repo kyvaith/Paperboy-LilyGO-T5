@@ -2,6 +2,7 @@
 #include "battery.h"
 #include "msg/msg.h"
 #include "touch.h"
+#include "serial_input.h"
 #include "gbemu.h"   /* GB_BTN_* masks */
 #include "audio.h"   /* audio_engine_t, audio_set/get_engine */
 
@@ -323,7 +324,11 @@ static void input_reset(void)
 static ui_input_t input_poll(void)
 {
     tp_state_t touch = tp_read_state();
+    tp_state_t serial = serial_input_read_state();
     ui_input_t input = {0};
+    touch.gb_buttons |= serial.gb_buttons;
+    touch.actions    |= serial.actions;
+
     uint8_t cur      = touch.gb_buttons;
     uint8_t edge     = cur & (uint8_t)~s_prev_btns;          /* rising edges */
     uint8_t actions  = touch.actions & (uint8_t)~s_prev_actions;

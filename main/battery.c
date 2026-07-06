@@ -18,8 +18,8 @@ static const char *TAG = "battery";
  *   With the ½× divider the measurable battery range is 0–5 V, which
  *   comfortably covers the LiPo operating window of 3.0–4.2 V.
  */
-#define BAT_ADC_UNIT     ADC_UNIT_1
-#define BAT_ADC_CHANNEL  ADC_CHANNEL_2   /* GPIO3 on ESP32-S3 */
+#define BAT_ADC_UNIT     ADC_UNIT_2
+#define BAT_ADC_CHANNEL  ADC_CHANNEL_3   /* GPIO14 on ESP32-S3 */
 #define BAT_ADC_ATTEN    ADC_ATTEN_DB_12 /* 0–≈2.5 V input range  */
 #define BAT_SAMPLES      8               /* readings to average    */
 #define BAT_DIVIDER      2               /* resistor divider ratio */

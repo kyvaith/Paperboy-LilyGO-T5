@@ -11,9 +11,9 @@ set(PAPERBOY_AUDIO_PCM_IMPL "audio_pdm.c" CACHE STRING
     "PCM audio backend source file (audio_pdm.c or audio_pwm.c)")
 
 idf_component_register(
-    SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c"
-    INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu"
-    REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c esp_adc
+    SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "serial_input.c" "sample_rom.c" "profiler.c" "battery.c" "lilygo_epd/ed047tc1.c" "lilygo_epd/i2s_data_bus.c" "lilygo_epd/rmt_pulse.c"
+    INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu" "lilygo_epd"
+    REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c esp_driver_usb_serial_jtag esp_driver_rmt esp_adc
 )
 
 # Audio APU format: 16-bit signed integer
