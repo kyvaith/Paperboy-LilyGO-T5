@@ -16,8 +16,8 @@ coordinate map is fully calibrated.
 
 - Target board: LILYGO T5 4.7 inch e-Paper ESP32-S3, 16 MB flash, 8 MB PSRAM.
 - Display: ED047TC1 e-paper panel driven through the LILYGO I80/I2S-style
-  e-paper driver. The Game Boy screen is rendered unrotated at 3x scale in a
-  480x432 video window.
+  e-paper driver. The Game Boy screen is rendered at 3x scale with the
+  original Paperboy portrait rotation in a 432x480 video window.
 - Touch: GT911 is initialized on the LILYGO touch pins and is detected on the
   tested board at I2C address `0x5D`.
 - Input: USB-Serial/JTAG controls over the same COM port used for flashing.
@@ -46,8 +46,8 @@ Keyboard mapping:
 | `K` or `Z` | B |
 | `Enter` | Start |
 | `Space` | Select |
-| `P` | Save state, SD-backed ROMs only |
-| `R` | Load state, SD-backed ROMs only |
+| `P` | Save state |
+| `R` | Load state |
 | `C` | Clear ghosting |
 
 ## SD Card Usage

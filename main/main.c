@@ -55,9 +55,9 @@ static paperboy_cfg_t s_cfg;
 #define SD_PIN_CS 42
 
 /*
- * GB rendering: 3x scale, Bayer-like dithering, no rotation.
- * The display task places the 480x432 video window on the right side of the
- * 960x540 e-paper panel, leaving the inherited touch-control artwork visible.
+ * GB rendering: 3x scale, Bayer-like dithering, 90-degree clockwise rotation.
+ * The display task places the 432x480 video window in the portrait control
+ * artwork inherited from Paperboy.
  */
 static esp_err_t sdcard_mount(void)
 {
@@ -679,13 +679,13 @@ void app_main(void)
     memset(fb, 0xff, EPD_FB_SIZE);
     // Clear screen
     msg_display_image(fb, false);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    msg_wait_image_done();
     msg_display_image(fb, true);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    msg_wait_image_done();
     msg_display_image(fb, false);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    msg_wait_image_done();
     msg_display_image(fb, true);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    msg_wait_image_done();
 
     for (int i = 0; i < sizeof(image); i++) {
         fb[i] = ~image[i];
@@ -693,7 +693,7 @@ void app_main(void)
     //memcpy(fb, image, sizeof(image));
     msg_display_image(fb, false);
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+    msg_wait_image_done();
     msg_enable_video(true);
 
     sd_err = sdcard_mount();

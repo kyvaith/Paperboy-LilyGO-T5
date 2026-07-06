@@ -221,23 +221,21 @@ static void IRAM_ATTR msg_update_task(void *arg) {
             // of the window
             memset(dma_buf[0], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
             memset(dma_buf[1], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
-            for (int i = 0; i < (EPD_VIDEO_Y_OFFSET - 2); i++) {
+            for (int i = 0; i < (30 - 2); i++) {
                 msg_send_row(dma_buf[0]);
             }
             dma_front_buffer = 0;
 
             uint8_t *stptr = statebuf;
             uint8_t *rdptr = cur_buf;
-            for (int i = 0; i < (EPD_VIDEO_HEIGHT * EPD_VIDEO_SCALE); i++) {
+            for (int i = 0; i < 480; i++) {
                 // Each line is repeated 3 times
                 // We divide the processing time across 3 lines
                 // DMA buffer flipping only happens every 3 lines
-                // For each line, we only process the configured video window.
-                // Each pass processes one third of the logical row.
                 uint8_t *wrptr = dma_buf[!dma_front_buffer];
-                wrptr += EPD_VIDEO_X_OFFSET / 4;
-                wrptr += (i % EPD_VIDEO_SCALE) * ((EPD_VIDEO_WIDTH / EPD_VIDEO_SCALE) / 4);
-                for (int j = 0; j < (EPD_VIDEO_WIDTH / EPD_VIDEO_SCALE) / 8; j++) {
+                wrptr += 432/4; // skip first 432 pixels
+                wrptr += (i % 3) * (144/4);
+                for (int j = 0; j < 144/8; j++) {
                     // Do 8 pixels each iteration
                     // In state byte: each nibble counts from 0 to 3,
                     // 4 means fully driven, so it should output NOP
@@ -276,7 +274,7 @@ static void IRAM_ATTR msg_update_task(void *arg) {
                         *wrptr++ = out;
                     }
                 }
-                if ((i % EPD_VIDEO_SCALE) == (EPD_VIDEO_SCALE - 1)) {
+                if ((i % 3) == 2) {
                     // Flip buffer every 3 lines
                     dma_front_buffer = !dma_front_buffer;
                     // At the 3rd iteration, it has been rendered, start sending the new line
@@ -290,7 +288,7 @@ static void IRAM_ATTR msg_update_task(void *arg) {
 
             // Bottom dummy lines
             memset(dma_buf[0], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
-            for (int i = 0; i < EPD_HEIGHT - EPD_VIDEO_Y_OFFSET - (EPD_VIDEO_HEIGHT * EPD_VIDEO_SCALE); i++) {
+            for (int i = 0; i < 30; i++) {
                 msg_send_row(dma_buf[0]);
             }
         }
@@ -426,6 +424,12 @@ void msg_display_image(uint8_t *img, bool to_white) {
     img_src = img;
     img_to_white = to_white;
     img_req = true;
+}
+
+void msg_wait_image_done(void) {
+    while (img_req) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 void msg_start(void) {

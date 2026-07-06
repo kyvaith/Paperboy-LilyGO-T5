@@ -149,7 +149,7 @@ static void ui_put_pixel_raw(uint8_t *fb, int x, int y, bool c)
 void ui_put_pixel(uint8_t *fb, int x, int y, int c)
 {
     for (int i = 0; i < 3; i++)
-        ui_put_pixel_raw(fb, x * 3 + i, y, i < c);
+        ui_put_pixel_raw(fb, (UI_SCREEN_H - 1 - y) * 3 + i, x, i < c);
 }
 
 void ui_put_rect(uint8_t *fb, int x0, int y0, int x1, int y1, int c)
