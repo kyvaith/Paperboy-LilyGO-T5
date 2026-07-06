@@ -101,11 +101,10 @@ static const uint8_t s_btn_masks[] = {
 
 #define NUM_BUTTONS  (sizeof(s_btn_zones) / sizeof(s_btn_zones[0]))
 
-/* System actions are handled over COM for now. Keep touch actions disabled
- * until the LILYGO coordinate map is calibrated against the actual screen. */
+/* Save/load action zones on the inherited background image. */
 static const tp_btn_zone_t s_action_zones[] = {
-    /* TP_ACTION_LOAD         */ { .r = { {0, 0, 0, 0}, {0, 0, 0, 0} } },
-    /* TP_ACTION_SAVE         */ { .r = { {0, 0, 0, 0}, {0, 0, 0, 0} } },
+    /* TP_ACTION_LOAD         */ { .r = { {14, 921, 112, 958}, {0, 0, 0, 0} } },
+    /* TP_ACTION_SAVE         */ { .r = { {134, 921, 233, 958}, {0, 0, 0, 0} } },
     /* TP_ACTION_CLEAR_SCREEN */ { .r = { {0, 0, 0, 0}, {0, 0, 0, 0} } },
 };
 

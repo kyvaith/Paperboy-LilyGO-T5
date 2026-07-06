@@ -117,55 +117,27 @@ static void copy_lcd_line(unsigned line)
 static void blit_lcd_to_epd(uint8_t *fb, const uint16_t *dirty_lines)
 {
     const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
+    const unsigned pitch = EPD_VIDEO_WIDTH / 8u;
 
     for (unsigned line = 0; line < GB_LCD_HEIGHT; line++) {
         if (dirty_lines != NULL && ((dirty_lines[line >> 4] >> (line & 0xFu)) & 1u) == 0u) {
             continue;
         }
 
-        const unsigned target_x = (GB_LCD_HEIGHT - 1u - line) * 3u;
-        uint8_t *wrptr = &(fb[target_x / 8u]);
-        const unsigned offset_x = target_x % 8u;
-        const bool crossing = offset_x >= 6u;
-        const uint32_t stride = crossing ? 53u : 54u;
-        const uint16_t clear_tmp = 0xe000u >> offset_x;
-        const uint8_t clrmask = (uint8_t)~(clear_tmp >> 8);
-        const uint8_t clrmask_crossing = (uint8_t)~(clear_tmp & 0xffu);
-        uint8_t setmask[4];
-        uint8_t setmask_crossing[4];
-
-        for (int shade = 0; shade < 4; shade++) {
-            const uint16_t tmp = dithermap[shade] >> offset_x;
-            setmask[shade] = (uint8_t)(tmp >> 8);
-            setmask_crossing[shade] = (uint8_t)(tmp & 0xffu);
-        }
-
-        if (!crossing) {
-            for (unsigned x = 0; x < GB_LCD_WIDTH; x++) {
-                uint8_t value = *wrptr;
-                const uint8_t pixel = gb_lcd_get_pixel(s_lcd, x, line);
-
-                value &= clrmask;
-                value |= setmask[pixel];
-                *wrptr = value;
-                wrptr += stride;
-            }
-            continue;
-        }
-
         for (unsigned x = 0; x < GB_LCD_WIDTH; x++) {
-            uint8_t value = *wrptr;
             const uint8_t pixel = gb_lcd_get_pixel(s_lcd, x, line);
+            const unsigned target_x = x * EPD_VIDEO_SCALE;
+            const unsigned byte_index = line * pitch + target_x / 8u;
+            const unsigned offset_x = target_x % 8u;
+            const uint16_t clear_tmp = 0xe000u >> offset_x;
+            const uint16_t set_tmp = dithermap[pixel] >> offset_x;
 
-            value &= clrmask;
-            value |= setmask[pixel];
-            *wrptr++ = value;
-
-            value = *wrptr;
-            value &= clrmask_crossing;
-            value |= setmask_crossing[pixel];
-            *wrptr = value;
-            wrptr += stride;
+            fb[byte_index] = (uint8_t)((fb[byte_index] & (uint8_t)~(clear_tmp >> 8)) |
+                                       (uint8_t)(set_tmp >> 8));
+            if ((clear_tmp & 0xffu) != 0u) {
+                fb[byte_index + 1u] = (uint8_t)((fb[byte_index + 1u] & (uint8_t)~clear_tmp) |
+                                                (uint8_t)set_tmp);
+            }
         }
     }
 }

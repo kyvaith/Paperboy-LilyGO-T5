@@ -16,7 +16,8 @@ coordinate map is fully calibrated.
 
 - Target board: LILYGO T5 4.7 inch e-Paper ESP32-S3, 16 MB flash, 8 MB PSRAM.
 - Display: ED047TC1 e-paper panel driven through the LILYGO I80/I2S-style
-  e-paper driver.
+  e-paper driver. The Game Boy screen is rendered unrotated at 3x scale in a
+  480x432 video window.
 - Touch: GT911 is initialized on the LILYGO touch pins and is detected on the
   tested board at I2C address `0x5D`.
 - Input: USB-Serial/JTAG controls over the same COM port used for flashing.
@@ -57,8 +58,8 @@ To load your own games, use a FAT32-formatted microSD card and place `.gb` or
 
 When SD mounting succeeds, the on-device picker lists ROM files and audio
 settings. Save states and SRAM persistence are written next to the selected ROM.
-When the built-in ROM is running, save and load commands are ignored because
-there is no writable SD-backed ROM path.
+When the built-in ROM is running, save/load uses a temporary in-memory snapshot
+that is lost after reset or power-off.
 
 ## Build and Flash
 

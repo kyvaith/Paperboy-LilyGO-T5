@@ -84,8 +84,11 @@
 #define EPD_D7_PIN          7
 #endif
 
-#define EPD_VIDEO_WIDTH     (144*3)
-#define EPD_VIDEO_HEIGHT    (160)
+#define EPD_VIDEO_SCALE     3
+#define EPD_VIDEO_WIDTH     (160 * EPD_VIDEO_SCALE)
+#define EPD_VIDEO_HEIGHT    144
+#define EPD_VIDEO_X_OFFSET  432
+#define EPD_VIDEO_Y_OFFSET  ((EPD_HEIGHT - (EPD_VIDEO_HEIGHT * EPD_VIDEO_SCALE)) / 2)
 
 #define EPD_FB_SIZE         (EPD_WIDTH * EPD_HEIGHT / 8)
 #define EPD_VIDEO_FB_SIZE   (EPD_VIDEO_WIDTH * EPD_VIDEO_HEIGHT / 8)

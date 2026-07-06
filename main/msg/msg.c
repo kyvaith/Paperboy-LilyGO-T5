@@ -216,29 +216,28 @@ static void IRAM_ATTR msg_update_task(void *arg) {
             // if (!printed) {
             //     ESP_LOGI(TAG, "In video mode");
             // }
-            // 30 dummy lines
+            // Top dummy lines
             // Ensure both buffers are empty. We will not touch areas outside
             // of the window
             memset(dma_buf[0], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
             memset(dma_buf[1], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
-            for (int i = 0; i < (30 - 2); i++) {
+            for (int i = 0; i < (EPD_VIDEO_Y_OFFSET - 2); i++) {
                 msg_send_row(dma_buf[0]);
             }
-            // Active video runs from line 30-510
             dma_front_buffer = 0;
 
             uint8_t *stptr = statebuf;
             uint8_t *rdptr = cur_buf;
-            for (int i = 0; i < 480; i++) {
+            for (int i = 0; i < (EPD_VIDEO_HEIGHT * EPD_VIDEO_SCALE); i++) {
                 // Each line is repeated 3 times
                 // We divide the processing time across 3 lines
                 // DMA buffer flipping only happens every 3 lines
-                // For each line, we only process pixel 432 to 432+432
-                // And each time we will only process 432/3=144 pixels
+                // For each line, we only process the configured video window.
+                // Each pass processes one third of the logical row.
                 uint8_t *wrptr = dma_buf[!dma_front_buffer];
-                wrptr += 432/4; // Always skip first 432 pixels
-                wrptr += (i % 3) * (144/4); // Skip processed pixels
-                for (int j = 0; j < 144/8; j++) {
+                wrptr += EPD_VIDEO_X_OFFSET / 4;
+                wrptr += (i % EPD_VIDEO_SCALE) * ((EPD_VIDEO_WIDTH / EPD_VIDEO_SCALE) / 4);
+                for (int j = 0; j < (EPD_VIDEO_WIDTH / EPD_VIDEO_SCALE) / 8; j++) {
                     // Do 8 pixels each iteration
                     // In state byte: each nibble counts from 0 to 3,
                     // 4 means fully driven, so it should output NOP
@@ -277,7 +276,7 @@ static void IRAM_ATTR msg_update_task(void *arg) {
                         *wrptr++ = out;
                     }
                 }
-                if ((i % 3) == 2) {
+                if ((i % EPD_VIDEO_SCALE) == (EPD_VIDEO_SCALE - 1)) {
                     // Flip buffer every 3 lines
                     dma_front_buffer = !dma_front_buffer;
                     // At the 3rd iteration, it has been rendered, start sending the new line
@@ -289,9 +288,9 @@ static void IRAM_ATTR msg_update_task(void *arg) {
             msg_send_row(dma_buf[dma_front_buffer]);
             msg_send_row(dma_buf[dma_front_buffer]);
 
-            // Another 30 dummy lines
+            // Bottom dummy lines
             memset(dma_buf[0], 0, EPD_WIDTH / 4 + EPD_LINE_PAD);
-            for (int i = 0; i < 30; i++) {
+            for (int i = 0; i < EPD_HEIGHT - EPD_VIDEO_Y_OFFSET - (EPD_VIDEO_HEIGHT * EPD_VIDEO_SCALE); i++) {
                 msg_send_row(dma_buf[0]);
             }
         }

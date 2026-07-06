@@ -131,11 +131,10 @@ static const uint8_t s_font5x7[95][5] = {
 /* ── Drawing primitives ───────────────────────────────────────────────────
  *
  * These replace the equivalents that were previously defined in main.c.
- * The pitch of the video framebuffer is EPD_VIDEO_WIDTH/8 = 432/8 = 54
- * bytes per raw row.
+ * The pitch of the video framebuffer is EPD_VIDEO_WIDTH/8 bytes per raw row.
  */
 
-#define UI_FB_PITCH  (EPD_VIDEO_WIDTH / 8)   /* 54 bytes per raw row */
+#define UI_FB_PITCH  (EPD_VIDEO_WIDTH / 8)
 #define UI_SCREEN_W  160                      /* logical pixel width  */
 #define UI_SCREEN_H  144                      /* logical pixel height */
 
@@ -150,7 +149,7 @@ static void ui_put_pixel_raw(uint8_t *fb, int x, int y, bool c)
 void ui_put_pixel(uint8_t *fb, int x, int y, int c)
 {
     for (int i = 0; i < 3; i++)
-        ui_put_pixel_raw(fb, (UI_SCREEN_H - 1 - y) * 3 + i, x, i < c);
+        ui_put_pixel_raw(fb, x * 3 + i, y, i < c);
 }
 
 void ui_put_rect(uint8_t *fb, int x0, int y0, int x1, int y1, int c)

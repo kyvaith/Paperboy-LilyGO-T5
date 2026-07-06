@@ -30,6 +30,9 @@ static sdmmc_card_t *s_sd_card;
 static uint8_t *s_rom_data;
 static size_t s_rom_size;
 static char s_rom_path[256];
+static uint8_t *s_memory_state;
+static size_t s_memory_state_size;
+static bool s_memory_state_valid;
 
 typedef struct {
     char           last_rom[256];
@@ -52,19 +55,10 @@ static paperboy_cfg_t s_cfg;
 #define SD_PIN_CS 42
 
 /*
- * GB rendering: 3× scale, Bayer-like dithering, 90° CW rotation.
- * GB_ORIGIN_X_R90 MUST be a multiple of 8 – the renderer writes whole bytes.
- * After CW 90° and 3× scale the image occupies:
- *   EPD x: [GB_ORIGIN_X_R90 .. GB_ORIGIN_X_R90 + GB_EPD_COL_SPAN - 1]  (432 px)
- *   EPD y: [GB_ORIGIN_Y_R90 .. GB_ORIGIN_Y_R90 + GB_EPD_ROW_SPAN - 1]  (480 px)
+ * GB rendering: 3x scale, Bayer-like dithering, no rotation.
+ * The display task places the 480x432 video window on the right side of the
+ * 960x540 e-paper panel, leaving the inherited touch-control artwork visible.
  */
-#define GB_ORIGIN_X_R90    432  /* must be ≡ 0 (mod 8) for byte-aligned writes */
-#define GB_ORIGIN_Y_R90     30
-#define GB_EPD_COL_SPAN    (PAPERBOY_GB_LCD_HEIGHT * 3)  /* 432 EPD columns */
-#define GB_EPD_ROW_SPAN    (PAPERBOY_GB_LCD_WIDTH  * 3)  /* 480 EPD rows    */
-#define GB_EPD_PITCH_BYTES (GB_EPD_COL_SPAN / 8)        /* 54 bytes / row  */
-#define GB_TOP_LINE         GB_ORIGIN_Y_R90
-#define GB_BOTTOM_LINE     (GB_ORIGIN_Y_R90 + GB_EPD_ROW_SPAN - 1)
 static esp_err_t sdcard_mount(void)
 {
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
@@ -574,13 +568,60 @@ out:
     return ok;
 }
 
+static bool save_game_state_to_memory(void)
+{
+    size_t state_size = paperboy_gb_state_size();
+
+    if (state_size == 0) {
+        ESP_LOGE(TAG, "Failed to determine in-memory snapshot size");
+        return false;
+    }
+
+    if (s_memory_state_size != state_size) {
+        heap_caps_free(s_memory_state);
+        s_memory_state = (uint8_t *)heap_caps_malloc(state_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_memory_state == NULL) {
+            s_memory_state_size = 0;
+            s_memory_state_valid = false;
+            ESP_LOGE(TAG, "Failed to allocate %u-byte in-memory snapshot", (unsigned)state_size);
+            return false;
+        }
+        s_memory_state_size = state_size;
+    }
+
+    if (!paperboy_gb_state_export(s_memory_state, s_memory_state_size)) {
+        s_memory_state_valid = false;
+        ESP_LOGE(TAG, "In-memory snapshot export failed: %s", paperboy_gb_last_error());
+        return false;
+    }
+
+    s_memory_state_valid = true;
+    ESP_LOGI(TAG, "Saved in-memory snapshot (%u bytes)", (unsigned)s_memory_state_size);
+    return true;
+}
+
+static bool load_game_state_from_memory(void)
+{
+    if (!s_memory_state_valid || s_memory_state == NULL || s_memory_state_size == 0) {
+        ESP_LOGW(TAG, "No in-memory snapshot present");
+        return false;
+    }
+
+    if (!paperboy_gb_state_import(s_memory_state, s_memory_state_size)) {
+        ESP_LOGE(TAG, "In-memory snapshot import failed: %s", paperboy_gb_last_error());
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Loaded in-memory snapshot");
+    return true;
+}
+
 static bool save_game_session(const char *rom_path)
 {
     bool persist_ok = true;
 
     if (!rom_path_on_sd(rom_path)) {
-        ESP_LOGW(TAG, "Save skipped: no writable SD-backed ROM is active");
-        return false;
+        return save_game_state_to_memory();
     }
 
     if (paperboy_gb_has_persist()) {
@@ -599,8 +640,7 @@ static bool load_game_session(const char *rom_path, bool include_snapshot)
     bool state_loaded = true;
 
     if (!rom_path_on_sd(rom_path)) {
-        ESP_LOGI(TAG, "Load skipped: no SD-backed ROM is active");
-        return false;
+        return include_snapshot ? load_game_state_from_memory() : false;
     }
 
     if (paperboy_gb_has_persist()) {
@@ -781,7 +821,7 @@ void app_main(void)
 
         if (action_edges & TP_ACTION_LOAD) {
             paperboy_gb_set_buttons(0);
-            if (load_game_state(s_rom_path)) {
+            if (load_game_session(s_rom_path, true)) {
                 ui_show_notice("LOAD", "Loaded", 500);
             }
             video_fb = msg_flip();
